@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simp2puml"
+dynamic = ["version"]
+description = "Convertisseur de diagrammes SIMP vers PlantUML"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Nela"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "build>=1,<2", "setuptools>=77"]
+
+[project.scripts]
+simp2puml = "simp2puml.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "simp2puml.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["simp2puml*"]
+
+[tool.setuptools.data-files]
+"share/man/man1" = ["docs/simp2puml.1"]

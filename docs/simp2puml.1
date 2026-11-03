@@ -1,0 +1,53 @@
+.TH SIMP2PUML 1
+.SH NAME
+simp2puml \- convertir des diagrammes SIMP et PlantUML
+.SH SYNOPSIS
+.B simp2puml
+.RI [ options ]
+.I source.simp|source.puml
+.SH DESCRIPTION
+Convertit un fichier SIMP en PlantUML, ou un fichier PlantUML en SIMP. L’extension du fichier source détermine le sens. Sans sortie explicite, le fichier est écrit dans le même dossier avec l’extension opposée. Une sortie existante ou identique à la source est refusée. Les fichiers source sont limités à 20 MiB.
+.PP
+La conversion SIMP vers PlantUML est prioritaire. Le profil SIMP pris en charge est expérimental ; sa compatibilité avec l’application cible n’a pas été vérifiée. La conversion PlantUML vers SIMP est également expérimentale.
+.SH OPTIONS
+.TP
+.B --version
+Affiche la version et quitte.
+.TP
+.B --diagram NAME
+Sélectionne par nom ou identifiant un diagramme dans une source SIMP. Les diagrammes ne sont pas fusionnés. Invalide pour une source PlantUML.
+.TP
+.BR -o , --output
+Écrit dans le chemin indiqué. Son extension doit correspondre au format de destination (.puml pour une entrée .simp, .simp pour une entrée .puml).
+.TP
+.B --check
+Vérifie la lecture et la génération du format cible en mémoire, sans écrire de fichier. Une sortie par défaut déjà présente n’empêche pas cette vérification. Incompatible avec --output.
+.TP
+.B --strict
+Refuse la conversion en présence d’avertissements, avant toute écriture. Combinable avec --check. La génération SIMP est toujours refusée dans ce mode, car elle émet un avertissement expérimental. Ce mode ne garantit pas l’absence de pertes non détectées.
+.TP
+.BR -h , --help
+Affiche l’aide et quitte.
+.SH STATUT DE SORTIE
+.TP
+.B 0
+Conversion ou vérification réussie.
+.TP
+.B 1
+Erreur de conversion, d’entrée/sortie ou refus en mode strict.
+.TP
+.B 2
+Erreur d’arguments de ligne de commande.
+.SH FICHIERS
+La source doit être un fichier ordinaire. La limite de 20 MiB porte sur les octets lus. La source et une sortie déjà présente, même un lien symbolique sans cible, ne sont jamais écrasées. Les entrées sont lues en UTF-8 (BOM accepté) ; la sortie est UTF-8.
+.SH EXEMPLES
+.nf
+simp2puml diagramme.simp -o resultat.puml
+simp2puml projet.simp --diagram "Classes" --check --strict
+.fi
+.SH SÉCURITÉ
+Les DTD et entités XML sont rejetées. Les directives PlantUML ne sont pas exécutées ; aucun fichier externe n’est inclus ni chargé.
+.SH LIMITATIONS
+Le modèle commun ne conserve pas les styles ni les positions. L’export SIMP génère une grille ; un aller-retour ne restaure pas la mise en page d’origine. Les flèches d’association perdent leur direction. Les packages et réalisations PlantUML ne sont pas pris en charge. Les structures/types textuels SIMP et certaines visibilités générées restent à valider dans l’application. La version XML SIMP 12.75 n’indique pas la version de l’application ; aucune compatibilité avec une version de celle-ci n’est affirmée.
+.SH VOIR AUSSI
+README du projet : installation, construction et informations de couverture.

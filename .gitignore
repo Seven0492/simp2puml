@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.build-check/
+.man-check/
+
+# Données personnelles locales, exclues du dépôt public.
+/Monopoly.simp
+/Classdiagram1.svg
+/examples/validation/

@@ -1,0 +1,17 @@
+' Exemple synthétique minimal — non extrait de Monopoly.simp.
+@startuml
+title Exemple synthétique
+class "Compte" as Account {
+  +solde: Decimal
+  -libelle: String
+  #historique: List<Transaction>
+  ~actif: Boolean
+  consulter(id: UUID): List<Transaction>
+}
+class Transaction {
+  +montant: Decimal
+  date: Date
+}
+Account -- Transaction
+Transaction --|> Account
+@enduml
