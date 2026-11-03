@@ -25,6 +25,14 @@ B --|> A
 """
 
 
+def _symlink(link, target):
+    """Crée un lien symbolique, ou ignore le test si le système le refuse (Windows sans privilège)."""
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f'liens symboliques indisponibles : {exc}')
+
+
 def normalized_model(diagram):
     by_id = {cls.id: cls for cls in diagram.classes}
     keys = {}
@@ -115,7 +123,7 @@ def test_refuses_existing_output_and_source_as_output(tmp_path, capsys):
     assert exc.value.code == 2
 
     alias = tmp_path / "alias.simp"
-    alias.symlink_to(source)
+    _symlink(alias, source)
     assert main([str(source), "-o", str(alias)]) == 1
     assert source.read_text(encoding="utf-8") == PUML
     assert "fichier source" in capsys.readouterr().err
@@ -189,7 +197,7 @@ def test_strict_refuses_detected_losses_before_writing(tmp_path, capsys, check):
     args = [str(source), '--strict', *(['--check'] if check else [])]
     assert main(args) == 1
     report = capsys.readouterr()
-    assert 'Élément omis' in report.err and 'mode strict' in report.err
+    assert 'représentation générique' in report.err and 'mode strict' in report.err
     assert 'Conversion terminée' not in report.out
     assert not source.with_suffix('.puml').exists()
 
@@ -269,7 +277,7 @@ def test_dangling_output_symlink_is_preserved(tmp_path, capsys):
     source.write_text(PUML, encoding='utf-8')
     output = source.with_suffix('.simp')
     missing = tmp_path / 'missing.simp'
-    output.symlink_to(missing)
+    _symlink(output, missing)
     assert main([str(source)]) == 1
     assert 'existe déjà' in capsys.readouterr().err
     assert output.is_symlink() and not missing.exists()

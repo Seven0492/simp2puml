@@ -1,5 +1,9 @@
 """Modèle UML commun : l'héritage va de l'enfant vers le parent."""
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .simp_document import SIMPView
 
 
 class ConversionError(ValueError):
@@ -72,6 +76,7 @@ class UMLDiagram:
     relationships: list[UMLRelationship] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[UMLNote] = field(default_factory=list)
+    source_view: 'SIMPView | None' = field(default=None, repr=False, compare=False)
 
     def validate(self) -> None:
         ids: set[str] = set()

@@ -1,4 +1,7 @@
-"""Sous-ensemble SIMP 12.75 monofichier, fondé sur Monopoly.simp.
+"""Lecture SIMP monofichier et écriture du profil de classes XML 12.75.
+
+Les vues enrichies et les autres familles passent par simp_document, puis
+simp_puml à l'export. Le sous-ensemble de classes historique conserve son API.
 
 Les définitions se trouvent dans items et models//abstract-items, les occurrences
 visuelles dans layer. L'absence de visibilité est conservée en omettant
@@ -8,13 +11,14 @@ autres restent textuels, sans type-id. Leur interprétation par l'outil SIMP
 n'a pas été vérifiée. Le fichier produit ne garantit pas sa compatibilité avec
 l'application ; seule la forme observée sert de profil.
 """
-import re
 import uuid
 import xml.etree.ElementTree as ET
 from typing import NoReturn
 
 from .model import (ConversionError, UMLAttribute, UMLClass, UMLDiagram,
                    UMLOperation, UMLParameter, UMLRelationship, UMLNote)
+from .simp_document import (list_diagrams, needs_extended_reader, read_project,
+                            read_view, select_diagram)
 
 _VIS = {'public': '+', 'private': '-', 'protected': '#', 'package': '~'}
 _REV_VIS = {v: k for k, v in _VIS.items()}
@@ -61,27 +65,12 @@ def _truth(element, *names):
 
 def parse_simp(text: str, diagram: str | None = None) -> UMLDiagram:
     """Lit les définitions sélectionnées et les objets globaux présentés."""
-    if re.search(r'<!\s*(?:DOCTYPE|ENTITY)\b', text, re.IGNORECASE):
-        _fail('DTD et ENTITY interdites')
-    try:
-        root = ET.fromstring(text)
-    except (ET.ParseError, ValueError) as exc:
-        raise ConversionError(f'XML invalide : {exc}') from exc
-    if root.tag != 'sim-project' or root.get('version') != '12.75' or root.get('multi-file') != 'no':
-        _fail('Projet SIMP 12.75 monofichier attendu')
-    diagrams = [d for d in root.findall('./models//diagram') if d.get('type') == 'uml-class']
-    if not diagrams:
-        _fail('Aucun diagramme de classes SIMP disponible')
-    choices = ', '.join(f"{d.get('name', '')} ({d.get('id', '')})" for d in diagrams)
-    if diagram is None:
-        if len(diagrams) != 1:
-            _fail(f'Sélection de diagramme requise ; choix : {choices}')
-        selected = diagrams[0]
-    else:
-        matches = [d for d in diagrams if diagram in (d.get('name'), d.get('id'))]
-        if len(matches) != 1:
-            _fail(f'Diagramme absent ou ambigu : {diagram} ; choix : {choices}')
-        selected = matches[0]
+    project, all_diagrams = read_project(text)
+    selected_view = select_diagram(all_diagrams, diagram)
+    if needs_extended_reader(project, selected_view):
+        view = read_view(project, selected_view)
+        return UMLDiagram(name=view.name, warnings=list(view.warnings), source_view=view)
+    root, selected = project, selected_view
     abstract = selected.find('abstract-items')
     if abstract is None:
         _fail('abstract-items absent')
@@ -292,6 +281,8 @@ def _edge_points(source, target):
 
 def write_simp(diagram: UMLDiagram) -> str:
     """Écrit le profil observé, sans garantie de compatibilité applicative."""
+    if diagram.source_view is not None:
+        _fail('La vue SIMP enrichie est exportable en PlantUML uniquement ; import inverse non pris en charge')
     diagram.validate()
     root = ET.Element('sim-project', {'version': '12.75', 'multi-file': 'no', 'uid': _new_id('simp')})
     ET.SubElement(root, 'meta')

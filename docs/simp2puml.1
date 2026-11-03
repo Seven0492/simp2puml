@@ -6,7 +6,7 @@ simp2puml \- convertir des diagrammes SIMP et PlantUML
 .RI [ options ]
 .I source.simp|source.puml
 .SH DESCRIPTION
-Convertit un fichier SIMP en PlantUML, ou un fichier PlantUML en SIMP. L’extension du fichier source détermine le sens. Sans sortie explicite, le fichier est écrit dans le même dossier avec l’extension opposée. Une sortie existante ou identique à la source est refusée. Les fichiers source sont limités à 20 MiB.
+Convertit un fichier SIMP en PlantUML, ou un fichier PlantUML en SIMP. Les deux formats peuvent aussi être exportés vers le DSL 2.0 d’Atelier Diagrammes (blocs Typst diagramme-ad, extension .atelier). L’extension du fichier source détermine le sens par défaut. Sans sortie explicite, le fichier est écrit dans le même dossier avec l’extension du format cible. Une sortie existante ou identique à la source est refusée. Les fichiers source sont limités à 20 MiB.
 .PP
 La conversion SIMP vers PlantUML est prioritaire. Le profil SIMP pris en charge est expérimental ; sa compatibilité avec l’application cible n’a pas été vérifiée. La conversion PlantUML vers SIMP est également expérimentale.
 .SH OPTIONS
@@ -17,8 +17,17 @@ Affiche la version et quitte.
 .B --diagram NAME
 Sélectionne par nom ou identifiant un diagramme dans une source SIMP. Les diagrammes ne sont pas fusionnés. Invalide pour une source PlantUML.
 .TP
+.B --list-diagrams
+Affiche une ligne JSON par diagramme SIMP (id, name, type), sans conversion. Incompatible avec --diagram, --all, --output, --to, --check et --strict.
+.TP
+.B --all
+Convertit toutes les vues SIMP en blocs PlantUML distincts dans un même fichier .puml, dans l’ordre du projet. Toutes les conversions sont vérifiées avant publication. Incompatible avec --diagram, --list-diagrams et les autres formats cibles.
+.TP
 .BR -o , --output
-Écrit dans le chemin indiqué. Son extension doit correspondre au format de destination (.puml pour une entrée .simp, .simp pour une entrée .puml).
+Écrit dans le chemin indiqué. Son extension doit correspondre au format de destination (.puml, .simp ou .atelier). Sans --to, une extension .atelier sélectionne l’export Atelier.
+.TP
+.B --to puml|simp|atelier
+Choisit le format cible ; il doit différer du format source. Par défaut : le format opposé (.simp vers .puml, .puml vers .simp).
 .TP
 .B --check
 Vérifie la lecture et la génération du format cible en mémoire, sans écrire de fichier. Une sortie par défaut déjà présente n’empêche pas cette vérification. Incompatible avec --output.
@@ -44,10 +53,17 @@ La source doit être un fichier ordinaire. La limite de 20 MiB porte sur les oct
 .nf
 simp2puml diagramme.simp -o resultat.puml
 simp2puml projet.simp --diagram "Classes" --check --strict
+simp2puml projet.simp --list-diagrams
+simp2puml projet.simp --all -o projet.puml
+simp2puml diagramme.simp --to atelier
 .fi
 .SH SÉCURITÉ
 Les DTD et entités XML sont rejetées. Les directives PlantUML ne sont pas exécutées ; aucun fichier externe n’est inclus ni chargé.
 .SH LIMITATIONS
-Le modèle commun ne conserve pas les styles ni les positions. L’export SIMP génère une grille ; un aller-retour ne restaure pas la mise en page d’origine. Les flèches d’association perdent leur direction. Les packages et réalisations PlantUML ne sont pas pris en charge. Les structures/types textuels SIMP et certaines visibilités générées restent à valider dans l’application. La version XML SIMP 12.75 n’indique pas la version de l’application ; aucune compatibilité avec une version de celle-ci n’est affirmée.
+Tous les types de vues XML SIMP monofichiers sont sélectionnables. Les classes enrichies, cas d’utilisation, séquences, états, packages, composants, déploiements, objets et entités-relations disposent d’adaptateurs. Les activités utilisent un graphe de flux en notation d’états ; les autres familles ont un rendu générique annoté avec avertissement. Cela ne constitue pas une traduction sémantique exhaustive de toutes les fonctionnalités de SIMP.
+.PP
+Les profils XML 10 et 12.75 sont observés ; les autres numéros sont lus structurellement avec avertissement. Les projets multifichiers et références invalides sont refusés. Les styles et positions sont recalculés. Les vues enrichies archivent leur XML sélectionné en commentaires JSON, sans import inverse. En séquence, les activations et fragments non représentables sont simplifiés avec avertissement. Le mode strict refuse les avertissements détectés.
+.PP
+Le lecteur PlantUML reste limité au sous-ensemble de classes historique et ne relit pas toutes les sorties enrichies. L’export SIMP génère une grille. L’export Atelier conserve son périmètre de classes ; les vues enrichies exigeant PlantUML sont refusées explicitement. La version XML SIMP n’indique pas la version de l’application. La matrice détaillée et les limites par famille figurent dans le README.
 .SH VOIR AUSSI
 README du projet : installation, construction et informations de couverture.

@@ -1,5 +1,6 @@
-"""CLI de conversion entre les formats SIMP et PlantUML."""
+"""CLI de conversion entre SIMP et PlantUML, avec export vers le DSL Atelier Diagrammes."""
 import argparse
+import json
 import os
 from pathlib import Path
 import stat
@@ -7,23 +8,33 @@ import sys
 import tempfile
 
 from . import __version__
+from .atelier import write_atelier
 from .model import ConversionError
 from .puml import parse_puml, write_puml
-from .simp import parse_simp, write_simp
+from .simp import list_diagrams, parse_simp, write_simp
 
 MAX_INPUT_SIZE = 20 * 1024 * 1024
 EXPERIMENTAL_WARNING = "La génération SIMP est expérimentale et sa compatibilité n'est pas validée."
+SOURCE_SUFFIXES = (".simp", ".puml")
+TARGETS = {"puml": ".puml", "simp": ".simp", "atelier": ".atelier"}
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="simp2puml",
-        description="Convertit des diagrammes SIMP en PlantUML ; la conversion inverse est expérimentale.",
+        description=("Convertit des diagrammes SIMP en PlantUML ; la conversion inverse est expérimentale. "
+                     "Les deux formats s'exportent aussi vers le DSL Typst Atelier Diagrammes (diagramme-ad)."),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("source", type=Path, help="fichier source .simp ou .puml")
-    parser.add_argument("-o", "--output", type=Path, help="chemin de sortie (extension opposée requise)")
-    parser.add_argument("--diagram", help="nom ou identifiant du diagramme (source SIMP uniquement)")
+    parser.add_argument("-o", "--output", type=Path, help="chemin de sortie (extension du format cible requise)")
+    parser.add_argument("--to", choices=sorted(TARGETS),
+                        help="format cible : puml, simp ou atelier (défaut : format opposé, "
+                             "ou extension de --output)")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--diagram", help="nom ou identifiant du diagramme (tout type SIMP)")
+    selection.add_argument("--all", action="store_true", help="convertir tous les diagrammes SIMP en blocs PlantUML distincts")
+    selection.add_argument("--list-diagrams", action="store_true", help="lister les identifiants, noms et types de diagrammes SIMP")
     parser.add_argument("--check", action="store_true", help="vérifier la conversion sans écrire de fichier")
     parser.add_argument("--strict", action="store_true", help="refuser la conversion en présence d'avertissements")
 
@@ -75,13 +86,34 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     source: Path = args.source
     suffix = source.suffix.lower()
-    if suffix not in (".simp", ".puml"):
+    if suffix not in SOURCE_SUFFIXES:
         parser.error("l'extension source doit être .simp ou .puml")
-    if args.diagram is not None and suffix != ".simp":
-        parser.error("--diagram ne s'applique qu'aux sources .simp")
+    if (args.diagram is not None or args.all or args.list_diagrams) and suffix != ".simp":
+        parser.error("--diagram, --all et --list-diagrams ne s'appliquent qu'aux sources .simp")
+    if args.list_diagrams:
+        if args.output or args.to or args.check or args.strict:
+            parser.error("--list-diagrams ne s'utilise pas avec --output, --to, --check ou --strict")
+        try:
+            for ident, name, kind in list_diagrams(_read_source(source)):
+                # JSON rend les tabulations et retours de ligne non ambigus.
+                print(json.dumps({'id': ident, 'name': name, 'type': kind}, ensure_ascii=False))
+        except (OSError, UnicodeError, ConversionError) as exc:
+            print(f"Erreur : {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.check and args.output is not None:
         parser.error("--check ne s'utilise pas avec --output")
-    expected_suffix = ".puml" if suffix == ".simp" else ".simp"
+    target = args.to
+    if target is None and args.output is not None:
+        target = next((name for name, ext in TARGETS.items()
+                       if ext == args.output.suffix.lower() and ext != suffix), None)
+    if target is None:
+        target = "puml" if suffix == ".simp" else "simp"
+    expected_suffix = TARGETS[target]
+    if args.all and target != "puml":
+        parser.error("--all exige une sortie PlantUML")
+    if expected_suffix == suffix:
+        parser.error("le format cible doit différer du format source")
     output: Path = args.output if args.output is not None else source.with_suffix(expected_suffix)
     if output.suffix.lower() != expected_suffix:
         parser.error(f"l'extension de sortie doit être {expected_suffix}")
@@ -92,16 +124,24 @@ def main(argv: list[str] | None = None) -> int:
             if output.exists() or output.is_symlink():
                 raise ConversionError(f"la sortie existe déjà : {output}")
         text = _read_source(source)
-        if suffix == ".simp":
-            diagram = parse_simp(text, diagram=args.diagram)
-            content = write_puml(diagram)
-        else:
-            diagram = parse_puml(text)
-            content = write_simp(diagram)
-            diagram.warnings.append(EXPERIMENTAL_WARNING)
-        for warning in diagram.warnings:
-            print(f"Avertissement : {warning}", file=sys.stderr)
-        if args.strict and diagram.warnings:
+        selectors = [ident for ident, _, _ in list_diagrams(text)] if args.all else [args.diagram]
+        diagrams = []
+        contents = []
+        for selector in selectors:
+            diagram = parse_simp(text, diagram=selector) if suffix == ".simp" else parse_puml(text)
+            diagrams.append(diagram)
+            if target == "atelier":
+                contents.append(write_atelier(diagram))
+            elif target == "puml":
+                contents.append(write_puml(diagram))
+            else:
+                contents.append(write_simp(diagram))
+                diagram.warnings.append(EXPERIMENTAL_WARNING)
+            for warning in diagram.warnings:
+                context = f"{diagram.name} : " if args.all else ""
+                print(f"Avertissement : {context}{warning}", file=sys.stderr)
+        content = "\n".join(contents)
+        if args.strict and any(d.warnings for d in diagrams):
             raise ConversionError("mode strict : conversion refusée en présence d'avertissements")
         if not args.check:
             _publish(output, content)
@@ -110,16 +150,26 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print("Vérification terminée (aucun fichier écrit)" if args.check else "Conversion terminée")
-    print(f"Classes : {sum(cls.kind == 'class' for cls in diagram.classes)}")
-    print(f"Relations : {len(diagram.relationships)}")
+    if args.all:
+        print(f"Diagrammes : {len(diagrams)}")
+    classes = [cls for d in diagrams for cls in d.classes]
+    views = [d.source_view for d in diagrams if d.source_view is not None]
+    elements = [e for v in views for e in v.elements.values()]
+    print(f"Classes : {sum(cls.kind == 'class' for cls in classes) + sum(e.get('type') == 'class' for e in elements)}")
+    relation_count = sum(v.relationship_count for v in views)
+    print(f"Relations : {sum(len(d.relationships) for d in diagrams) + relation_count}")
     for kind, label in (('interface', 'Interfaces'), ('enumeration', 'Énumérations'),
                         ('interface_symbol', 'Symboles d’interface')):
-        count = sum(cls.kind == kind for cls in diagram.classes)
+        source_kind = {'interface': 'uml-interface-classifier', 'enumeration': 'enumeration', 'interface_symbol': 'uml-interface'}[kind]
+        count = sum(cls.kind == kind for cls in classes) + sum(e.get('type') == source_kind for e in elements)
         if count:
             print(f"{label} : {count}")
-    if diagram.notes:
-        print(f"Notes : {len(diagram.notes)}")
-    print(f"Avertissements : {len(diagram.warnings)}")
+    note_count = sum(len(d.notes) for d in diagrams) + sum(e.get('type') == 'comment' for e in elements)
+    if note_count:
+        print(f"Notes : {note_count}")
+    if views:
+        print(f"Éléments des vues enrichies : {sum(len(v.elements) for v in views)}")
+    print(f"Avertissements : {sum(len(d.warnings) for d in diagrams)}")
     if not args.check:
         print(f"Sortie : {output}")
     return 0

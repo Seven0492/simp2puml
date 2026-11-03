@@ -412,6 +412,11 @@ def _member_suffix(typ: str | None, mult: str | None) -> str:
 
 
 def write_puml(diagram: UMLDiagram) -> str:
+    if diagram.source_view is not None:
+        from .simp_puml import write_view
+        content, warnings = write_view(diagram.source_view)
+        diagram.warnings.extend(w for w in warnings if w not in diagram.warnings)
+        return content
     diagram.validate()
     _title(diagram.name)
     lines = ['@startuml']

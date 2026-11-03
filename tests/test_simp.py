@@ -305,16 +305,15 @@ def test_member_multiplicity_warning(location, expected):
     assert not any('Multiplicité omise' in w for w in parse_simp(serialized(root)).warnings)
 
 
-def test_select_only_class_diagrams():
+def test_select_all_diagram_families_explicitly():
     root = xml_for()
     model = required(root, './models/model')
-    ET.SubElement(model, 'diagram', {'id': 'sequence', 'name': 'Sequence', 'type': 'uml-sequence'})
-    assert parse_simp(serialized(root)).name == 'Essai'
-    with pytest.raises(ConversionError, match='choix'):
-        parse_simp(serialized(root), 'Sequence')
-    required(model, 'diagram').set('type', 'uml-sequence')
-    with pytest.raises(ConversionError, match='Aucun diagramme de classes'):
+    other = ET.SubElement(model, 'diagram', {'id': 'sequence', 'name': 'Sequence', 'type': 'uml-sequence'})
+    ET.SubElement(other, 'abstract-items')
+    with pytest.raises(ConversionError, match='Sélection'):
         parse_simp(serialized(root))
+    assert parse_simp(serialized(root), 'Essai').name == 'Essai'
+    assert parse_simp(serialized(root), 'Sequence').source_view.kind == 'uml-sequence'
 
 
 def test_index_all_semantic_locations_and_detect_duplicates():
@@ -347,8 +346,12 @@ def test_unsupported_items_report_type_id_and_name():
     root = xml_for()
     ET.SubElement(abstract(root), 'item', {'id': 'u1', 'type': 'universal-connector', 'name': 'Mystere'})
     ET.SubElement(required(root, 'items'), 'item', {'id': 'u2', 'type': 'new-kind', 'name': 'Autre'})
-    warnings = parse_simp(serialized(root)).warnings
-    assert any(all(s in w for s in ('universal-connector', 'u1', 'Mystere')) for w in warnings)
+    from simp2puml.puml import write_puml
+    parsed = parse_simp(serialized(root))
+    output = write_puml(parsed)
+    warnings = parsed.warnings
+    assert 'Mystere' in output
+    assert any(all(s in w for s in ('universal-connector', 'u1')) for w in warnings)
     assert not any('u2' in w for w in warnings)
 
 
@@ -438,8 +441,13 @@ def test_unsupported_role_fields_and_ambiguous_type_warning():
     rel.set('derived', 'true')
     role = required(rel, 'end-role')
     role.set('navigability', 'true'); role.set('attribute-ref', 'a123')
+    from simp2puml.puml import write_puml
     d = parse_simp(serialized(root))
-    assert all(any(s in w for w in d.warnings) for s in ('dérivée', 'navigability', 'attribute-ref'))
+    output = write_puml(d)
+    assert '-->' in output and ' : /' in output
+    assert any('attribute-ref' in w for w in d.warnings)
+    role.set('navigability', ''); role.set('attribute-ref', '')
+    rel.set('derived', 'false')
     ET.SubElement(abstract(root), 'item', {'id': 'dupname', 'type': 'class', 'name': 'Parent'})
     op = required(abstract(root), "item[@id='child']/operations/operation")
     op.set('type', 'Parent'); op.set('type-id', 'Class:parent')
