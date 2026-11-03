@@ -1,0 +1,13 @@
+Source: simp2puml
+Section: utils
+Priority: optional
+Maintainer: @MAINTAINER@
+Build-Depends: debhelper-compat (= 13), dh-python, pybuild-plugin-pyproject, python3-all (>= 3.11), python3-build, python3-wheel, python3-setuptools (>= 77)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: simp2puml
+Architecture: all
+Depends: python3 (>= 3.11), ${python3:Depends}, ${misc:Depends}
+Description: PlantUML and SIMP class diagram converter
+ Convert class diagrams between PlantUML and the experimental SIMP profile.

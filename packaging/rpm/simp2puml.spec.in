@@ -1,0 +1,38 @@
+Name:           simp2puml
+Version:        @VERSION@
+Release:        1%{?dist}
+Summary:        Convert PlantUML and SIMP class diagrams
+License:        MIT
+Source0:        %{name}-%{version}.tar.gz
+BuildArch:      noarch
+BuildRequires:  python3-devel
+BuildRequires:  pyproject-rpm-macros
+BuildRequires:  python3dist(setuptools) >= 77
+Requires:       python3 >= 3.11
+
+%description
+Convert class diagrams between PlantUML and the experimental SIMP profile.
+
+%prep
+%autosetup
+
+%generate_buildrequires
+%pyproject_buildrequires
+
+%build
+%pyproject_wheel
+
+%install
+%pyproject_install
+%pyproject_save_files simp2puml
+install -Dpm 0644 docs/simp2puml.1 %{buildroot}%{_mandir}/man1/simp2puml.1
+
+%check
+PYTHONPATH=%{buildroot}%{python3_sitelib} python3 -m simp2puml --version
+PYTHONPATH=%{buildroot}%{python3_sitelib} python3 -m simp2puml --help
+
+%files -f %{pyproject_files}
+%license LICENSE
+%doc README.md
+%{_bindir}/simp2puml
+%{_mandir}/man1/simp2puml.1*
