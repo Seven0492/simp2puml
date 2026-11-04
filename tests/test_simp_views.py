@@ -100,6 +100,10 @@ def test_member_edit_dates_are_metadata_not_annotations(tmp_path):
     validate_with_plantuml(text, tmp_path)
 
 
+def box(ident, x, y, w=100, h=60):
+    return f'<item id="{ident}"><layout x="{x}" y="{y}" width="{w}" height="{h}"/></item>'
+
+
 def drawing_of(text):
     return text.split("' simp2puml-source")[0]
 
@@ -118,6 +122,26 @@ def test_generic_names_and_association_end_labels(tmp_path):
     assert '<img' not in drawing and '<U+003C>img' in drawing
     # Visibilité seule (valeur SIMP par défaut) : pas de « - » isolé ; avec un nom de rôle, gardée.
     assert re.search(r'E3 "1" -(?:\w+-)?- "-cases\\n40" E4', drawing)
+    validate_with_plantuml(text, tmp_path)
+
+
+def test_single_target_notes_are_attached_and_wrapped_like_simp(tmp_path):
+    long_text = 'Constructeur: ' + 'initialiser les attributs du joueur ' * 6
+    items = (item('parent', 'class', 'Case') + item('other', 'class', 'Go')
+             + item('n', 'comment', body=f'<comment>{long_text}\n</comment>')
+             + item('c', 'comment-connector', **{'from': 'n', 'to': 'parent'})
+             + item('shared', 'comment', body='<comment>Commune</comment>')
+             + item('c1', 'comment-connector', **{'from': 'shared', 'to': 'parent'})
+             + item('c2', 'comment-connector', **{'from': 'shared', 'to': 'other'}))
+    graphics = box('parent', 400, 300) + box('other', 100, 300) + box('n', 650, 300, 200, 80)
+    text, _ = convert('uml-class', items, graphics, version='15.1')  # Lecture enrichie (positions).
+    drawing = drawing_of(text)
+    # Reliée à une seule classe : accrochée du côté où elle était dans SIMP, coupée à 200 px.
+    note = next(line for line in drawing.splitlines() if line.startswith('note right of E1 : '))
+    assert max(len(part) for part in note.split(' : ', 1)[1].split('\\n')) <= 34
+    assert not note.endswith('\\n')
+    # Reliée à plusieurs éléments : note libre et pointillés, comme avant.
+    assert 'note "Commune" as E5' in drawing and re.search(r'E5 \.(?:\w+\.)?\. E1', drawing)
     validate_with_plantuml(text, tmp_path)
 
 

@@ -8,6 +8,7 @@ ce n'est ni une instruction PlantUML, ni une promesse d'import inverse.
 import json
 import math
 import re
+import textwrap
 import xml.etree.ElementTree as ET
 
 from .model import ConversionError
@@ -48,9 +49,24 @@ _STATE_STEREO = {'initial-state': 'start', 'final-state': 'end', 'activity-final
                  'exit-point': 'exitPoint', 'terminate': 'end'}
 _STRUCTURAL = {'uml-class', 'uml-usecase', 'uml-component', 'uml-deployment', 'uml-object',
                'uml-package', 'uml-composite', 'uml-composite-structure', 'entity-relationship'}
+_NOTE_TYPES = {'comment', 'formatted-text', 'text'}
 _CLASSIFIERS = {'class', 'abstract class', 'interface', 'enum'}
 # Nom générique « Nom<T, U> » : paramètres limités à des caractères sans effet en PlantUML.
 _GENERIC = re.compile(r'^([^<>]+?)<([\w ,.?]+)>$')
+# Largeur moyenne d'un caractère (px) pour couper les notes à la largeur de leur boîte SIMP.
+_NOTE_CHAR_PX = 6.2
+
+
+def wrap_note(text: str, width: float | None) -> str:
+    """Coupe une note à la largeur de sa boîte dans SIMP (les retours à la ligne existants sont gardés)."""
+    text = text.strip()
+    if not width or width <= 0:
+        return text
+    columns = max(16, round(width / _NOTE_CHAR_PX))
+    lines = []
+    for line in text.splitlines():
+        lines.extend(textwrap.wrap(line, columns, break_long_words=False, break_on_hyphens=False) or [''])
+    return '\n'.join(lines)
 
 
 def literal(value: str) -> str:
@@ -111,6 +127,27 @@ class _Writer:
         if not math.isfinite(number):
             raise ConversionError(f'Coordonnée {key} non finie pour {ident}')
         return number
+
+    def box(self, ident: str) -> tuple[float, float, float, float] | None:
+        """Position et taille (x, y, largeur, hauteur) dans le dessin SIMP, si elles sont connues."""
+        graphic = self.graphic(ident)
+        layout = graphic.find('layout') if graphic is not None else None
+        if layout is None or any(layout.get(k) is None for k in ('x', 'y', 'width', 'height')):
+            return None
+        return tuple(self.number(ident, k) for k in ('x', 'y', 'width', 'height'))
+
+    def note_side(self, note: str, target: str) -> str:
+        """Côté de la cible où se trouvait la note dans SIMP (left, right, top ou bottom)."""
+        a, b = self.box(note), self.box(target)
+        if a is None or b is None:
+            return 'right'
+        dx = (a[0] + a[2] / 2) - (b[0] + b[2] / 2)
+        dy = (a[1] + a[3] / 2) - (b[1] + b[3] / 2)
+        # Distances rapportées aux demi-tailles cumulées : une note large reste « au-dessus » si elle l'était.
+        nx, ny = dx / max(1.0, (a[2] + b[2]) / 2), dy / max(1.0, (a[3] + b[3]) / 2)
+        if abs(nx) >= abs(ny):
+            return 'right' if dx > 0 else 'left'
+        return 'bottom' if dy > 0 else 'top'
 
     def declaration(self, keyword: str, name: str, alias: str, stereotype: str) -> str:
         """Déclaration PlantUML ; un classifieur générique utilise la notation UML <T> (cadre pointillé)."""
@@ -280,10 +317,34 @@ class _Writer:
         for ident in nodes:
             children.setdefault(parents.get(ident), []).append(ident)
 
+        # Notes reliées à un seul élément : accrochées à côté de lui (note left of …), comme dans SIMP,
+        # au lieu d'un nœud isolé relié par un long pointillé qui élargit tout le diagramme.
+        note_links: dict[str, list[tuple[str, str]]] = {}
+        for ident, (item, source, target) in edges.items():
+            if item.get('type') == 'comment-connector':
+                for note, other in ((source, target), (target, source)):
+                    if nodes.get(note) is not None and nodes[note].get('type') in _NOTE_TYPES:
+                        note_links.setdefault(note, []).append((ident, other))
+        attached: dict[str, str] = {}
+        for note, links in note_links.items():
+            others = {other for _, other in links}
+            if len(others) == 1:
+                other = next(iter(others))
+                if (other in nodes and nodes[other].get('type') not in _NOTE_TYPES and not state_mode
+                        and note not in parents and other not in parents and not children.get(note)):
+                    attached[note] = other
+        attached_edges = {edge for note in attached for edge, _ in note_links[note]}
+
+        def note_text(ident: str, item: ET.Element) -> str:
+            raw = item.findtext('comment') or '\n'.join(item.itertext()).strip() or item.get('name', '')
+            box = self.box(ident)
+            return wrap_note(raw, box[2] if box else None)
 
         def emit(ident: str, depth: int = 0) -> None:
             if depth > 100:
                 raise ConversionError('Imbrication de conteneurs supérieure à 100')
+            if ident in attached:
+                return  # Écrite après sa cible.
             item = nodes[ident]
             typ = item.get('type', '')
             name = item.get('name', '') or typ
@@ -303,9 +364,9 @@ class _Writer:
                 if typ not in _NODES:
                     stereotype += ' <<' + literal(typ) + '>>'
                     self.warn(f'Élément {ident} ({typ}) : représentation générique annotée')
-            if typ in ('comment', 'formatted-text', 'text'):
+            if typ in _NOTE_TYPES:
                 keyword = 'note'
-                name = item.findtext('comment') or '\n'.join(item.itertext()).strip() or name
+                name = note_text(ident, item)
                 stereotype = ''
             if typ == 'object':
                 obj = item.find('object')
@@ -342,7 +403,12 @@ class _Writer:
 
         for ident in children.get(None, []):
             emit(ident)
+        for note, target in attached.items():
+            side = self.note_side(note, target)
+            self.lines.append(f'note {side} of {self.ids[target]} : {literal(note_text(note, nodes[note]))}')
         for ident, (item, source, target) in sorted(edges.items(), key=lambda pair: pair[1][0].get('type') == 'association-class-link'):
+            if ident in attached_edges:
+                continue  # Remplacé par la note accrochée à sa cible.
             if item.get('type') == 'association-class-link':
                 edge_id, class_id = (source, target) if source in edges else (target, source)
                 if edge_id in edges and class_id in nodes:
