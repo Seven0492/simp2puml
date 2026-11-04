@@ -115,6 +115,19 @@ def test_layout_directives_are_added_after_each_block_and_removed(tmp_path):
     assert 'top to bottom' not in lr and lr.count('left to right direction') == 1
 
 
+def test_simp_layout_hints_can_be_removed_and_portrait_preset_applied():
+    text = ('@startuml\nclass "A" as E1\nclass "B" as E2\nnote right of E1 : voir -up- et .left.\n'
+            'E1 "1" *-down- "40" E2 : contient\nE2 .left.> E1\nE1 -[hidden]down- E2\n@enduml\n')
+    assert gui.has_layout_hints(text)
+    free = gui.strip_layout_hints(text)
+    assert not gui.has_layout_hints(free)
+    assert 'E1 "1" *-- "40" E2 : contient' in free and 'E2 ..> E1' in free and 'hidden' not in free
+    assert 'note right of E1 : voir -up- et .left.' in free  # Le texte des notes n'est pas touché.
+    portrait = gui.portrait_layout(text)
+    assert portrait.startswith('@startuml\nskinparam wrapWidth 200\nleft to right direction\n')
+    assert not gui.has_layout_hints(portrait)
+
+
 def test_edited_text_is_saved_as_is_and_never_overwrites(tmp_path):
     source = write(tmp_path / 'essai.puml', PUML)
     request = gui.Request(source, 'atelier', strict=True)

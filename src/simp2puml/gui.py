@@ -158,17 +158,51 @@ def preview_text(request: Request, result: Result | None = None) -> str:
 
 # Directives PlantUML proposées par le menu « Mise en page » : (libellé, ligne, lignes incompatibles).
 LAYOUT_DIRECTIVES = {
-    "vertical": ("Hiérarchie de gauche à droite (diagramme plus haut que large)",
-                 "left to right direction", ("top to bottom direction",)),
+    "vertical": ("Hiérarchie de gauche à droite", "left to right direction", ("top to bottom direction",)),
     "wrap": ("Couper les notes et textes longs (200 px)", "skinparam wrapWidth 200", ()),
     "hide_empty": ("Masquer les compartiments vides", "hide empty members", ()),
-    "ortho": ("Liens à angle droit", "skinparam linetype ortho", ("skinparam linetype polyline",)),
+    # Le moteur intégré (smetana) ignore cette directive : elle n'agit qu'avec Graphviz.
+    "ortho": ("Liens à angle droit (avec Graphviz)", "skinparam linetype ortho", ("skinparam linetype polyline",)),
 }
 EDIT_DELAY_MS = 300  # Aperçu relancé après cette pause de frappe.
+# Indications de disposition SIMP écrites par la conversion : direction dans la flèche, liens invisibles.
+_HINT_ARROW = re.compile(r"-(?:up|down|left|right)-|\.(?:up|down|left|right)\.")
+_HINT_HIDDEN = re.compile(r"\s*E\d+ -\[hidden\](?:up|down|left|right)- E\d+\s*")
+_RELATION_LINE = re.compile(r"\s*E\d+\b")
 
 
 def has_directive(text: str, directive: str) -> bool:
     return any(line.strip() == directive for line in text.split("\n"))
+
+
+def has_layout_hints(text: str) -> bool:
+    """Le texte suit-il encore la disposition SIMP (directions de liens, liens invisibles) ?"""
+    return any(_HINT_HIDDEN.fullmatch(line) or (_RELATION_LINE.match(line) and _HINT_ARROW.search(line))
+               for line in text.split("\n"))
+
+
+def strip_layout_hints(text: str) -> str:
+    """Disposition libre : PlantUML place tout lui-même (utile avec « gauche à droite » pour une page portrait).
+
+    Seules les lignes de relation (alias E1, E2…) sont touchées : le texte des notes et des classes reste intact.
+    """
+    out = []
+    for line in text.split("\n"):
+        if _HINT_HIDDEN.fullmatch(line):
+            continue
+        if _RELATION_LINE.match(line):
+            line = _HINT_ARROW.sub(lambda m: m.group(0)[0] * 2, line, count=1)
+        out.append(line)
+    return "\n".join(out)
+
+
+def portrait_layout(text: str) -> str:
+    """Préréglage page portrait : disposition libre, hiérarchie de gauche à droite, notes coupées."""
+    text = strip_layout_hints(text)
+    for key in ("vertical", "wrap"):
+        _, directive, conflicts = LAYOUT_DIRECTIVES[key]
+        text = set_directive(text, directive, True, conflicts)
+    return text
 
 
 def set_directive(text: str, directive: str, enabled: bool, conflicts: tuple[str, ...] = ()) -> str:
@@ -713,6 +747,11 @@ class App:
         menu = tk.Menu(self.layout_button, tearoff=False, bg=C["surface"], fg=C["ink"], font=self.f_ui,
                        activebackground=C["accent"], activeforeground="#ffffff", selectcolor=C["accent"],
                        bd=0, postcommand=self._sync_layout_menu)
+        self.simp_layout_var = tk.BooleanVar(value=True)
+        menu.add_checkbutton(label="Suivre la disposition SIMP", variable=self.simp_layout_var,
+                             command=self.toggle_simp_layout)
+        menu.add_command(label="Préréglage : page portrait (document)", command=self.apply_portrait)
+        menu.add_separator()
         for key, (label, _, _) in LAYOUT_DIRECTIVES.items():
             menu.add_checkbutton(label=label, variable=self.layout_vars[key],
                                  command=lambda k=key: self.toggle_layout(k))
@@ -886,14 +925,33 @@ class App:
         content = self.editor_text()
         for key, (_, directive, _) in LAYOUT_DIRECTIVES.items():
             self.layout_vars[key].set(has_directive(content, directive))
+        self.simp_layout_var.set(has_layout_hints(content))
 
     def toggle_layout(self, key: str) -> None:
         """Ajoute ou retire une directive de mise en page ; une seule étape d'annulation (Ctrl+Z)."""
         _, directive, conflicts = LAYOUT_DIRECTIVES[key]
-        text = self.output_text
         before = self.editor_text()
-        after = set_directive(before, directive, self.layout_vars[key].get(), conflicts)
-        if after == before:
+        self._replace_text(set_directive(before, directive, self.layout_vars[key].get(), conflicts))
+
+    def toggle_simp_layout(self) -> None:
+        """Décocher : disposition libre de PlantUML. Recocher n'est possible qu'en rétablissant la conversion."""
+        before = self.editor_text()
+        if self.simp_layout_var.get():
+            if not has_layout_hints(before):
+                self.simp_layout_var.set(False)
+                messagebox.showinfo(
+                    "simp2puml", "Les positions SIMP ne peuvent pas être recalculées depuis le texte modifié.\n\n"
+                                 "Annulez (Ctrl+Z) ou utilisez « Rétablir la conversion ».", parent=self.root)
+            return
+        self._replace_text(strip_layout_hints(before))
+
+    def apply_portrait(self) -> None:
+        """Page portrait pour un document : disposition libre, gauche à droite, notes coupées (un seul Ctrl+Z)."""
+        self._replace_text(portrait_layout(self.editor_text()))
+
+    def _replace_text(self, after: str) -> None:
+        text = self.output_text
+        if after == self.editor_text():
             return
         view, cursor = text.yview()[0], text.index("insert")
         text.configure(autoseparators=False)
