@@ -1128,11 +1128,12 @@ class App:
     def _detect_engine(self) -> None:
         """Au démarrage : trouve le moteur et ouvre ses processus, pour un premier aperçu immédiat."""
         put = self._preview_queue.put  # Pas de référence à la fenêtre depuis un autre fil.
+        self._detecting = True
 
         def work() -> None:
             engine = render.find_engine()
+            put((0, "detected", engine))  # Toujours signalé, même absent : les aperçus en attente repartent.
             if engine is not None:
-                put((0, "detected", engine))
                 render.preview_renderer(engine).warm_up()
 
         threading.Thread(target=work, daemon=True).start()
@@ -1142,6 +1143,12 @@ class App:
         if self._installing:
             return
         visible = self.tab_var.get() == "Aperçu"
+        if self.engine is None and getattr(self, "_detecting", False):
+            # Détection du démarrage en cours : l'attendre plutôt que chercher le moteur une seconde fois.
+            self._preview_waiting = True
+            if visible:
+                self.preview_status_var.set("Préparation du moteur…")
+            return
         if not visible and self.engine is None:
             return  # Détection et proposition d'installation attendent l'ouverture de l'onglet.
         request = self._request()
@@ -1151,6 +1158,7 @@ class App:
             render.preview_renderer(self.engine).interrupt()  # Le rendu en cours est devenu inutile.
         self._preview_generation += 1
         self._preview_busy = True
+        self._preview_stale = True
         generation, result, engine = self._preview_generation, self.result, self.engine
         zoom = None if self._auto_fit else self.preview_zoom
         canvas = (self.canvas.winfo_width(), self.canvas.winfo_height())
@@ -1258,11 +1266,15 @@ class App:
             self._set_status(f"Enregistrement impossible : {payload}", "error")
             messagebox.showerror("simp2puml", f"Enregistrement impossible :\n{payload}", parent=self.root)
             return
-        if kind == "detected":  # Moteur trouvé au démarrage : préparer l'aperçu de ce qui est déjà ouvert.
-            if self.engine is None:
+        if kind == "detected":  # Fin de la détection du démarrage (payload : moteur ou None).
+            self._detecting = False
+            waiting, self._preview_waiting = getattr(self, "_preview_waiting", False), False
+            if self.engine is None and payload is not None:
                 self.engine, self._engine_checked = payload, True
-                if self.result is not None:
-                    self._request_preview()
+            if self.engine is not None and self.result is not None:
+                self._request_preview()  # Aperçu préparé d'avance (ou attendu par l'onglet).
+            elif waiting:
+                self._request_preview()  # Aucun moteur : l'onglet affiche la proposition d'installation.
             return
         if generation != self._preview_generation:
             return
@@ -1293,6 +1305,7 @@ class App:
         elif kind in ("image", "draft"):
             key, rendering, zoom = payload
             if kind == "image":
+                self._preview_stale = False  # À jour jusqu'à la prochaine demande (option, frappe, zoom).
                 self._preview_cache[key] = rendering
                 if len(self._preview_cache) > 24:
                     self._preview_cache.pop(next(iter(self._preview_cache)))
@@ -1625,8 +1638,9 @@ class App:
         if current == "Aperçu":
             if self._preview_busy:  # Rendu préparé en arrière-plan : il s'affichera dès qu'il sera prêt.
                 self.preview_status_var.set("Rendu en cours…")
-            else:
+            elif getattr(self, "_preview_stale", True) or not self._preview_pages:
                 self._request_preview()
+            # Sinon l'aperçu préparé d'avance est à jour : rien à refaire.
 
     # Sélection de la source ---------------------------------------------------------------
     def browse(self) -> None:

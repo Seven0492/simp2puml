@@ -228,9 +228,32 @@ _VERIFIED: dict[str, bool] = {}
 
 
 def _usable_native(executable: Path) -> bool:
+    """Vérifie que l'exécutable démarre (`-version`, ~0,2 s), une seule fois tant qu'il ne change pas.
+
+    Le résultat positif est gardé à côté de lui (taille, date, version) : les lancements suivants
+    de l'interface n'attendent plus cette vérification.
+    """
     key = str(executable)
-    if key not in _VERIFIED:  # Une vérification par session (exécutable compilé : ~0,1 s).
-        _VERIFIED[key] = _runs([key, "-version"], lambda out: "PlantUML version" in out)
+    if key in _VERIFIED:
+        return _VERIFIED[key]
+    marker = executable.parent / ".simp2puml-verifie"
+    try:
+        stat = executable.stat()
+        signature = f"{stat.st_size}:{stat.st_mtime_ns}:{PLANTUML_VERSION}"
+    except OSError:
+        signature = None
+    try:
+        if signature and marker.read_text(encoding="ascii") == signature:
+            _VERIFIED[key] = True
+            return True
+    except OSError:
+        pass  # Pas encore vérifié (ou marqueur illisible) : vérification ci-dessous.
+    _VERIFIED[key] = _runs([key, "-version"], lambda out: "PlantUML version" in out)
+    if _VERIFIED[key] and signature:
+        try:
+            marker.write_text(signature, encoding="ascii")
+        except OSError:
+            pass  # Dossier en lecture seule : on revérifiera au prochain lancement.
     return _VERIFIED[key]
 
 

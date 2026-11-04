@@ -101,6 +101,20 @@ def test_installed_native_engine_needs_nothing_else(monkeypatch, tmp_path):
 PNG = b"\x89PNG\r\n\x1a\nfaux"
 
 
+def test_native_check_runs_once_until_the_executable_changes(monkeypatch, tmp_path):
+    executable = tmp_path / "plantuml.exe"
+    executable.write_bytes(b"binaire")
+    calls = []
+    monkeypatch.setattr(render, "_runs", lambda argv, check: calls.append(argv) or True)
+    monkeypatch.setattr(render, "_VERIFIED", {})
+    assert render._usable_native(executable) and len(calls) == 1
+    monkeypatch.setattr(render, "_VERIFIED", {})  # Nouvelle session de l'interface.
+    assert render._usable_native(executable) and len(calls) == 1  # Marqueur : pas de nouveau -version.
+    executable.write_bytes(b"autre binaire")  # Exécutable remplacé : revérifié.
+    monkeypatch.setattr(render, "_VERIFIED", {})
+    assert render._usable_native(executable) and len(calls) == 2
+
+
 def test_preview_cache_keys_on_text_resolution_and_engine(tmp_path):
     cache = render.PreviewCache(tmp_path)
     native = render.Engine.native(Path("plantuml.exe"))
