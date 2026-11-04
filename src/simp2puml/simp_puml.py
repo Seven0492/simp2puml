@@ -168,6 +168,29 @@ class _Writer:
             return 'right' if dx > 0 else 'left'
         return 'down' if dy > 0 else 'up'
 
+    def columns(self, candidates: list[str], linked: set[frozenset]) -> list[tuple[str, str]]:
+        """Paires (dessus, dessous) empilées dans SIMP sans lien entre elles.
+
+        PlantUML aligne sur une même rangée ce qu'aucun lien ne sépare ; un lien invisible vers
+        l'élément situé juste en dessous (même colonne) reproduit les colonnes du dessin d'origine.
+        """
+        boxes = {i: b for i in candidates if (b := self.box(i)) is not None}
+        pairs = []
+        for upper, a in boxes.items():
+            best, best_gap = None, None
+            for lower, b in boxes.items():
+                if lower == upper:
+                    continue
+                overlap = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+                gap = b[1] - (a[1] + a[3])
+                # Même colonne (moitié de la plus étroite au moins) et vraiment en dessous.
+                if overlap >= 0.5 * min(a[2], b[2]) and gap >= -0.25 * min(a[3], b[3]):
+                    if best_gap is None or gap < best_gap:
+                        best, best_gap = lower, gap
+            if best is not None and frozenset((upper, best)) not in linked:
+                pairs.append((upper, best))
+        return pairs
+
     @staticmethod
     def directed(arrow: str, direction: str) -> str:
         """Insère une indication de direction dans une flèche PlantUML (« --|> » → « -up-|> »)."""
@@ -448,6 +471,16 @@ class _Writer:
         for note, target in attached.items():
             side = self.note_side(note, target)
             self.lines.append(f'note {side} of {self.ids[target]} : {literal(note_text(note, nodes[note]))}')
+        if self.layout_hints and not state_mode:
+            linked = {frozenset((source, target)) for _, source, target in edges.values()}
+            candidates = [i for i in children.get(None, [])
+                          if i not in attached and nodes[i].get('type') != 'uml-interface']
+            # Colonnes calculées à part pour les éléments reliés et pour les isolés : un lien
+            # invisible ne doit pas rattacher un élément isolé (énumération…) au graphe principal.
+            connected = {end for pair in linked for end in pair}
+            for group in ([i for i in candidates if i in connected], [i for i in candidates if i not in connected]):
+                for upper, lower in self.columns(group, linked):
+                    self.lines.append(f'{self.ids[upper]} -[hidden]down- {self.ids[lower]}')
         for ident, (item, source, target) in sorted(edges.items(), key=lambda pair: pair[1][0].get('type') == 'association-class-link'):
             if ident in attached_edges:
                 continue  # Remplacé par la note accrochée à sa cible.

@@ -161,6 +161,24 @@ def test_link_directions_and_lollipops_follow_simp_positions(tmp_path):
     validate_with_plantuml(text, tmp_path)
 
 
+def test_simp_columns_become_hidden_links_without_mixing_isolated_elements(tmp_path):
+    items = (item('a', 'class', 'Haut') + item('b', 'class', 'Bas') + item('c', 'class', 'Voisin')
+             + item('r', 'dependency', **{'from': 'a', 'to': 'c'}) + item('s', 'dependency', **{'from': 'b', 'to': 'c'})
+             + item('i1', 'enumeration', 'Couleur') + item('i2', 'enumeration', 'Pions')
+             + item('i3', 'uml-interface-classifier', 'IJeu'))
+    graphics = (box('a', 100, 100) + box('b', 110, 300) + box('c', 400, 200)
+                + box('i1', 700, 100) + box('i2', 700, 250) + box('i3', 120, 500))
+    text, _ = convert('uml-class', items, graphics, version='15.1')
+    drawing = drawing_of(text)
+    # Haut et Bas sont empilés dans SIMP sans lien direct : un lien invisible garde la colonne.
+    assert 'E1 -[hidden]down- E2' in drawing
+    # Deux énumérations isolées empilées : leur propre colonne…
+    assert 'E6 -[hidden]down- E7' in drawing
+    # …mais IJeu, isolée, n'est pas accrochée sous Bas (graphe principal) malgré sa position.
+    assert '-[hidden]down- E8' not in drawing
+    validate_with_plantuml(text, tmp_path)
+
+
 def test_nested_packages_duplicate_names_and_endpoint_from_graphic(tmp_path):
     items = item('p', 'package', 'P') + item('a', 'component', 'Same', owner='p')
     items += item('b', 'component', 'Same') + item('r', 'dependency')
