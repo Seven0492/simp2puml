@@ -25,6 +25,9 @@ _REL = re.compile(rf'({_ID}){_END}\s*(<\|--|--\|>|\*--|--\*|o--|--o|-->|<--|--|\
 _GRAPHIC = re.compile(r'(?:skinparam\s+[^{}]+|hide\s+[^{}]+|show\s+[^{}]+|scale\s+[^{}]+|page\s+[^{}]+|(?:left to right|top to bottom) direction)\Z', re.IGNORECASE)
 _MULT = r'(?:\d+|\*|\d+\.\.(?:\d+|\*))'
 _SUFFIX = re.compile(rf'\s+\[({_MULT})\]\Z')
+# Visibilité d'une extrémité sans nom de rôle : commentaire sous le lien (PlantUML n'en dessine rien,
+# là où « "1"/- » afficherait un tiret isolé), relu par parse_puml pour ne rien perdre.
+_END_VISIBILITY = re.compile(r"\s*'\s*simp2puml-visibilite:\s*([+\-#~_])\s+([+\-#~_])\s*\Z")
 
 
 def _error(message: str) -> NoReturn:
@@ -242,7 +245,8 @@ def _endpoint(mult: str | None, vis: str | None, role: str | None) -> tuple[str 
 
 
 def parse_puml(text: str) -> UMLDiagram:
-    lines = _clean(text.replace('\r\n', '\n').replace('\r', '\n'))
+    source_lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    lines = _clean('\n'.join(source_lines))
     diagram = UMLDiagram()
     classes, notes = {}, {}
     declared = set()
@@ -347,6 +351,12 @@ def parse_puml(text: str) -> UMLDiagram:
                         cls = UMLClass(id=ident, name=ident)
                         classes[ident] = cls
                         diagram.classes.append(cls)
+            hidden = _END_VISIBILITY.fullmatch(source_lines[number]) if number < len(source_lines) else None
+            if hidden:  # Ligne suivante : visibilités des extrémités sans nom de rôle.
+                if not lv and not lr and hidden.group(1) != '_':
+                    lv = hidden.group(1)
+                if not rv and not rr and hidden.group(2) != '_':
+                    rv = hidden.group(2)
             pending_rel.append((number, left, right, arrow, lm, lv or None, lr or None, rm, rv or None, rr or None, label))
             continue
         if _GRAPHIC.fullmatch(line):
@@ -480,11 +490,16 @@ def write_puml(diagram: UMLDiagram) -> str:
         arrow = {'association': '--', 'inheritance': '--|>', 'composition': '*--', 'aggregation': 'o--', 'provided_interface': '--'}[rel.kind]
         def end(mult, role, vis):
             _endpoint(mult, vis, role)
-            return (' "' + mult + '"' if mult is not None else '') + ('/' + (vis or '') + (role or '') if role is not None or vis is not None else '')
+            # Sans nom de rôle, la visibilité seule dessinerait un « - » isolé : elle passe en commentaire.
+            return (' "' + mult + '"' if mult is not None else '') + ('/' + (vis or '') + role if role is not None else '')
         left = end(rel.source_multiplicity, rel.source_role, rel.source_visibility)
         right = end(rel.target_multiplicity, rel.target_role, rel.target_visibility)
         label = ' : ' + _relation_name(rel.name) if rel.name is not None else ''
         lines.append(f'{aliases[rel.source]}{left} {arrow}{right} {aliases[rel.target]}{label}')
+        hidden = [vis if role is None and vis else '_' for vis, role in
+                  ((rel.source_visibility, rel.source_role), (rel.target_visibility, rel.target_role))]
+        if hidden != ['_', '_']:
+            lines.append(f"' simp2puml-visibilite: {hidden[0]} {hidden[1]}")
     for note in diagram.notes:
         _note_text(note.text)
         lines.append(f'note as {aliases[note.id]}')

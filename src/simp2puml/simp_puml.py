@@ -268,6 +268,7 @@ class _Writer:
         for ident in nodes:
             children.setdefault(parents.get(ident), []).append(ident)
 
+
         def emit(ident: str, depth: int = 0) -> None:
             if depth > 100:
                 raise ConversionError('Imbrication de conteneurs supérieure à 100')
@@ -357,8 +358,11 @@ class _Writer:
                     if role is not None:
                         if role.get('visibility') not in (None, '', *_VIS):
                             raise ConversionError(f'Visibilité SIMP inconnue : {role.get("visibility")}')
-                        text = _VIS.get(role.get('visibility', ''), '') + role.get('name', '')
-                        text += ('\n' if text else '') + role.get('multiplicity', '')
+                        # La visibilité qualifie un nom de rôle : seule (valeur par défaut de SIMP),
+                        # elle ne produirait qu'un « - » isolé à l'extrémité du lien.
+                        name = role.get('name', '')
+                        text = _VIS.get(role.get('visibility', ''), '') + name if name else ''
+                        text += ('\n' if text and role.get('multiplicity') else '') + role.get('multiplicity', '')
                     ends.append(f' "{literal(text)}"' if text else '')
                 left, right = ends
                 tip = {'aggregation': 'o', 'composition': '*'}

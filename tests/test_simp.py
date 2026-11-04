@@ -435,6 +435,24 @@ def test_unknown_layer_reference_rejected():
         parse_simp(serialized(root))
 
 
+def test_visibility_only_association_ends_are_not_drawn_but_kept():
+    from simp2puml.puml import parse_puml, write_puml
+    root = xml_for()
+    rel = required(abstract(root), "item[@type='relationship']/relation")
+    for tag, mult in (('start-role', '1'), ('end-role', '40')):
+        role = required(rel, tag)
+        role.set('visibility', 'private'); role.set('multiplicity', mult); role.set('name', '')
+    d = parse_simp(serialized(root))
+    assert d.source_view is None  # Lecteur de classes historique.
+    text = write_puml(d)
+    link = next(line for line in text.splitlines() if ' -- ' in line)
+    assert '/' not in link and link.endswith('"40" child')  # Aucun « - » isolé dessiné par PlantUML.
+    assert "' simp2puml-visibilite: - -" in text
+    again = next(r for r in parse_puml(text).relationships if r.kind == 'association')
+    assert (again.source_visibility, again.target_visibility) == ('-', '-')  # Rien n'est perdu.
+    assert (again.source_multiplicity, again.target_multiplicity) == ('1', '40')
+
+
 def test_unsupported_role_fields_and_ambiguous_type_warning():
     root = xml_for()
     rel = required(abstract(root), "item[@type='relationship']/relation")
