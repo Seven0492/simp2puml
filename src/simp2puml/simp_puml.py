@@ -103,6 +103,7 @@ class _Writer:
         self.ids = {ident: f'E{i}' for i, ident in enumerate(view.elements, 1)}
         self.lines = ['@startuml', f'title {literal(view.name)}']
         self.warnings: list[str] = []
+        self.layout_hints = True  # Directions des liens d'après les positions SIMP.
 
     def warn(self, message: str) -> None:
         if message not in self.warnings:
@@ -148,6 +149,36 @@ class _Writer:
         if abs(nx) >= abs(ny):
             return 'right' if dx > 0 else 'left'
         return 'bottom' if dy > 0 else 'top'
+
+    def direction(self, source: str, target: str) -> str:
+        """Direction de la cible vue de la source dans SIMP (up, down, left, right), '' si inconnue."""
+        a, b = self.box(source), self.box(target)
+        if a is None or b is None:
+            return ''
+        dx = (b[0] + b[2] / 2) - (a[0] + a[2] / 2)
+        dy = (b[1] + b[3] / 2) - (a[1] + a[3] / 2)
+        if abs(dx) < 1 and abs(dy) < 1:
+            return ''
+        nx, ny = dx / max(1.0, (a[2] + b[2]) / 2), dy / max(1.0, (a[3] + b[3]) / 2)
+        if any(self.view.elements.get(e, ET.Element('x')).get('type') == 'uml-interface' for e in (source, target)):
+            # Symbole d'interface : toujours au rang voisin (dessus ou dessous), collé à sa classe.
+            # Sur le même rang (gauche/droite), la mise en page l'éloigne au bout d'une longue courbe.
+            return 'down' if dy >= 0 else 'up'
+        if abs(nx) >= abs(ny):
+            return 'right' if dx > 0 else 'left'
+        return 'down' if dy > 0 else 'up'
+
+    @staticmethod
+    def directed(arrow: str, direction: str) -> str:
+        """Insère une indication de direction dans une flèche PlantUML (« --|> » → « -up-|> »)."""
+        if not direction:
+            return arrow
+        for line in ('--', '..'):
+            index = arrow.find(line)
+            if index >= 0:
+                c = line[0]
+                return arrow[:index] + f'{c}{direction}{c}' + arrow[index + 2:]
+        return arrow
 
     def declaration(self, keyword: str, name: str, alias: str, stereotype: str) -> str:
         """Déclaration PlantUML ; un classifieur générique utilise la notation UML <T> (cadre pointillé)."""
@@ -334,6 +365,15 @@ class _Writer:
                         and note not in parents and other not in parents and not children.get(note)):
                     attached[note] = other
         attached_edges = {edge for note in attached for edge, _ in note_links[note]}
+        # Symbole d'interface (cercle) relié une seule fois : son nom passe sur le lien, dont le
+        # libellé a une place réservée ; sous un cercle, des noms voisins se chevaucheraient.
+        lollipop_edges: dict[str, list[str]] = {}
+        for ident, (item, source, target) in edges.items():
+            for end in (source, target):
+                if nodes.get(end) is not None and nodes[end].get('type') == 'uml-interface':
+                    lollipop_edges.setdefault(end, []).append(ident)
+        lollipop_label = {links[0]: symbol for symbol, links in lollipop_edges.items()
+                          if len(links) == 1 and not state_mode}
 
         def note_text(ident: str, item: ET.Element) -> str:
             raw = item.findtext('comment') or '\n'.join(item.itertext()).strip() or item.get('name', '')
@@ -374,6 +414,8 @@ class _Writer:
                     name += ' : ' + obj.get('classifier-name', '')
             if keyword == 'class' and _true(item, 'is-abstract', 'abstract'):
                 keyword = 'abstract class'
+            if typ == 'uml-interface' and ident in lollipop_label.values():
+                name = ' '  # Nom écrit sur l'unique lien du cercle.
             declaration = self.declaration(keyword, name, alias, stereotype)
             if children.get(ident):
                 # PlantUML n'autorise pas un conteneur sur chaque symbole.
@@ -467,6 +509,12 @@ class _Writer:
             label = self.edge_label(item)
             if relation is not None and _true(relation, 'derived'):
                 label = '/' + label
+            if ident in lollipop_label:
+                symbol = nodes[lollipop_label[ident]]
+                name = literal(symbol.get('name', '') or 'interface')
+                label = name + (' ' + label if label else '')
+            if self.layout_hints and not state_mode:
+                arrow = self.directed(arrow, self.direction(source, target))
             self.lines.append(f'{self.ids[source]}{left} {arrow}{right} {self.ids[target]}' + (f' : {label}' if label else ''))
             extra = self.extra_properties(item)
             if extra:

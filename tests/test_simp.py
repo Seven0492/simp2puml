@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -462,7 +463,8 @@ def test_unsupported_role_fields_and_ambiguous_type_warning():
     from simp2puml.puml import write_puml
     d = parse_simp(serialized(root))
     output = write_puml(d)
-    assert '-->' in output and ' : /' in output
+    # Navigable vers la cible ; la flèche peut porter une direction de mise en page (-down->).
+    assert re.search(r' -(?:-|up-|down-|left-|right-)> ', output) and ' : /' in output
     assert any('attribute-ref' in w for w in d.warnings)
     role.set('navigability', ''); role.set('attribute-ref', '')
     rel.set('derived', 'false')

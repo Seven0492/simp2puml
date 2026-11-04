@@ -145,6 +145,22 @@ def test_single_target_notes_are_attached_and_wrapped_like_simp(tmp_path):
     validate_with_plantuml(text, tmp_path)
 
 
+def test_link_directions_and_lollipops_follow_simp_positions(tmp_path):
+    items = (item('parent', 'class', 'Case') + item('left', 'class', 'Go') + item('below', 'class', 'Prison')
+             + item('sym', 'uml-interface', 'IJeu')
+             + item('g1', 'generalization', **{'from': 'left', 'to': 'parent'})
+             + item('g2', 'generalization', **{'from': 'below', 'to': 'parent'})
+             + item('p', 'uml-provided-interface-connector', **{'from': 'parent', 'to': 'sym'}))
+    graphics = box('parent', 400, 300) + box('left', 100, 300) + box('below', 400, 600) + box('sym', 560, 310, 20, 20)
+    text, _ = convert('uml-class', items, graphics, version='15.1')
+    drawing = drawing_of(text)
+    # Go est à gauche de Case, Prison en dessous : les flèches le reprennent.
+    assert 'E2 -right-|> E1' in drawing and 'E3 -up-|> E1' in drawing
+    # Symbole relié une fois : nom sur le lien (place réservée), au rang voisin (centre un peu plus haut).
+    assert '() " " as E4' in drawing and 'E1 -up- E4 : IJeu' in drawing
+    validate_with_plantuml(text, tmp_path)
+
+
 def test_nested_packages_duplicate_names_and_endpoint_from_graphic(tmp_path):
     items = item('p', 'package', 'P') + item('a', 'component', 'Same', owner='p')
     items += item('b', 'component', 'Same') + item('r', 'dependency')
