@@ -11,6 +11,7 @@ import base64
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
+import os
 import queue
 import re
 import sys
@@ -366,6 +367,8 @@ class App:
         self._auto_fit = True
         self._preview_busy = False
         self._preview_sizes: dict[str, list[tuple[int, int]]] = {}  # Taille naturelle par texte (SVG).
+        # Cache disque des aperçus (désactivable avec SIMP2PUML_NO_CACHE, par exemple pour des essais).
+        self._disk_cache = None if os.environ.get("SIMP2PUML_NO_CACHE") else render.PreviewCache()
 
         root.title(f"simp2puml {__version__}")
         root.configure(bg=C["bg"])
@@ -1152,7 +1155,7 @@ class App:
         zoom = None if self._auto_fit else self.preview_zoom
         canvas = (self.canvas.winfo_width(), self.canvas.winfo_height())
         margin, scale = 2 * self.sp("xl"), self.scale
-        cache, sizes_cache = self._preview_cache, self._preview_sizes
+        cache, sizes_cache, disk = self._preview_cache, self._preview_sizes, self._disk_cache
         override = self._edited_plantuml()  # Texte modifié à la main, lu ici (fil principal).
         if visible:
             self.preview_status_var.set("Rendu en cours…")
@@ -1169,13 +1172,15 @@ class App:
                 renderer = render.preview_renderer(found)
                 text = override if override is not None else preview_text(request, result)
                 digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                sizes = sizes_cache.get(digest)
+                sizes = sizes_cache.get(digest) or (disk.sizes(found, text) if disk else None)
                 if sizes is None:  # Mise en page seule (SVG) : quelques dizaines de millisecondes.
                     sizes, error = renderer.sizes(text)
                     if not sizes:
                         put((generation, "syntax", error or "PlantUML n'a produit aucune image"))
                         return
-                    sizes_cache[digest] = sizes
+                    if disk and not error:
+                        disk.put_sizes(found, text, sizes)
+                sizes_cache[digest] = sizes
                 chosen = zoom
                 width, height = sizes[0]
                 if chosen is None:  # Premier aperçu d'un fichier : directement à la bonne taille.
@@ -1184,6 +1189,9 @@ class App:
                 dpi = max(MIN_DPI, round(96 * scale * chosen))
                 key = (digest, dpi)
                 rendering = cache.get(key)
+                if rendering is None and disk:  # Déjà dessiné lors d'une session précédente.
+                    pages = disk.pages(found, text, dpi)
+                    rendering = render.Rendering(pages) if pages else None
                 if rendering is None:
                     if width * height * (dpi / 96) ** 2 > DRAFT_PIXELS:
                         # Grand diagramme : ébauche à demi-résolution (4× moins de pixels), puis version nette.
@@ -1191,6 +1199,8 @@ class App:
                         if draft.pages:
                             put((generation, "draft", (key, draft, chosen)))
                     rendering = renderer.png_pages(text, dpi)
+                    if disk and rendering.pages and not rendering.error:
+                        disk.put_pages(found, text, dpi, rendering.pages)
                 put((generation, "image", (key, rendering, chosen)))
             except (OSError, UnicodeError, ConversionError, render.RenderError) as exc:
                 put((generation, "error", str(exc)))

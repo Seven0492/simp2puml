@@ -98,6 +98,43 @@ def test_installed_native_engine_needs_nothing_else(monkeypatch, tmp_path):
     assert render.find_engine() == render.Engine.native(executable)
 
 
+PNG = b"\x89PNG\r\n\x1a\nfaux"
+
+
+def test_preview_cache_keys_on_text_resolution_and_engine(tmp_path):
+    cache = render.PreviewCache(tmp_path)
+    native = render.Engine.native(Path("plantuml.exe"))
+    java = render.Engine.java(Path("java"), Path("plantuml.jar"))
+    assert cache.pages(native, DIAGRAM, 96) is None and cache.sizes(native, DIAGRAM) is None
+    cache.put_sizes(native, DIAGRAM, [(120, 80)])
+    cache.put_pages(native, DIAGRAM, 96, [PNG, PNG + b"2"])
+    assert cache.sizes(native, DIAGRAM) == [(120, 80)]
+    assert cache.pages(native, DIAGRAM, 96) == [PNG, PNG + b"2"]
+    # Autre résolution, autre texte ou autre moteur : jamais l'image d'un autre rendu.
+    assert cache.pages(native, DIAGRAM, 144) is None
+    assert cache.pages(native, DIAGRAM + "' modifié\n", 96) is None
+    assert cache.pages(java, DIAGRAM, 96) is None
+    # Une entrée abîmée est ignorée, pas affichée.
+    next(tmp_path.glob("*.1.png")).write_bytes(b"pas une image")
+    assert cache.pages(native, DIAGRAM, 96) is None
+
+
+def test_preview_cache_drops_least_recently_used_beyond_its_limit(tmp_path):
+    cache = render.PreviewCache(tmp_path, max_bytes=3000)
+    engine = render.Engine.native(Path("plantuml.exe"))
+    big = PNG + b"x" * 1000
+    cache.put_pages(engine, "@startuml\nclass Ancien\n@enduml\n", 96, [big])
+    import os, time
+    old = time.time() - 3600
+    for path in tmp_path.iterdir():
+        os.utime(path, (old, old))
+    cache.put_pages(engine, "@startuml\nclass Recent\n@enduml\n", 96, [big])
+    cache.put_pages(engine, "@startuml\nclass Dernier\n@enduml\n", 96, [big])
+    assert cache.pages(engine, "@startuml\nclass Dernier\n@enduml\n", 96) == [big]
+    assert cache.pages(engine, "@startuml\nclass Ancien\n@enduml\n", 96) is None
+    assert sum(p.stat().st_size for p in tmp_path.iterdir()) <= 3000
+
+
 @pytest.fixture
 def engine():
     found = render.find_engine()

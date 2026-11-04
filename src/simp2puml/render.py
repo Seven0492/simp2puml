@@ -25,6 +25,7 @@ import atexit
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import queue
@@ -651,6 +652,86 @@ def _pipe_error(message: str, inserted: list[int]) -> str:
         return f"Erreur PlantUML : {detail or line_text}"
     line -= sum(1 for added in inserted if added < line)  # Lignes `skinparam dpi` ajoutées avant l'erreur.
     return f"Erreur PlantUML à la ligne {line} : {detail}".rstrip(" :")
+
+
+class PreviewCache:
+    """Cache disque des aperçus : rouvrir un diagramme déjà dessiné est immédiat, même après redémarrage.
+
+    La clé couvre le texte exact, la résolution et le moteur (version de PlantUML, natif ou Java,
+    Graphviz ou smetana) : une image n'est jamais réutilisée pour un rendu qui pourrait différer.
+    Les erreurs de syntaxe ne sont pas gardées. Écriture atomique ; au-delà de `max_bytes`, les images
+    les moins récemment utilisées sont supprimées.
+    """
+
+    def __init__(self, root: Path | None = None, max_bytes: int = 200 * 1024 * 1024):
+        self.root = root or data_dir() / "cache" / "apercu"
+        self.max_bytes = max_bytes
+
+    @staticmethod
+    def _engine_tag(engine: Engine) -> str:
+        layout = "dot" if (os.environ.get("GRAPHVIZ_DOT") or shutil.which("dot")) else "smetana"
+        return f"{PLANTUML_VERSION}|{engine.kind}|{layout}"
+
+    def _key(self, engine: Engine, text: str, dpi: int | None) -> str:
+        material = f"{self._engine_tag(engine)}|{dpi or 'taille'}|".encode("utf-8") + text.encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+    def _read(self, path: Path) -> bytes | None:
+        try:
+            data = path.read_bytes()
+            os.utime(path)  # Récemment utilisé : gardé lors du nettoyage.
+            return data
+        except OSError:
+            return None
+
+    def _write(self, path: Path, data: bytes) -> None:
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=self.root, prefix=".", suffix=".tmp", delete=False) as temp:
+                temp.write(data)
+            os.replace(temp.name, path)
+        except OSError:
+            return  # Cache facultatif : un disque plein ou protégé n'empêche pas l'aperçu.
+        self._prune()
+
+    def _prune(self) -> None:
+        try:
+            files = [(p.stat().st_mtime, p.stat().st_size, p) for p in self.root.iterdir() if p.is_file()]
+        except OSError:
+            return
+        total = sum(size for _, size, _ in files)
+        for _, size, path in sorted(files):
+            if total <= self.max_bytes * 3 // 4:
+                break
+            try:
+                path.unlink()
+                total -= size
+            except OSError:
+                pass
+
+    def sizes(self, engine: Engine, text: str) -> list[tuple[int, int]] | None:
+        raw = self._read(self.root / f"{self._key(engine, text, None)}.json")
+        try:
+            return [tuple(pair) for pair in json.loads(raw)] if raw else None
+        except (ValueError, TypeError):
+            return None
+
+    def put_sizes(self, engine: Engine, text: str, sizes: list[tuple[int, int]]) -> None:
+        self._write(self.root / f"{self._key(engine, text, None)}.json", json.dumps(sizes).encode("ascii"))
+
+    def pages(self, engine: Engine, text: str, dpi: int) -> list[bytes] | None:
+        key = self._key(engine, text, dpi)
+        count = self._read(self.root / f"{key}.pages")
+        if not count or not count.isdigit():
+            return None
+        pages = [self._read(self.root / f"{key}.{index}.png") for index in range(int(count))]
+        return pages if all(page and page.startswith(b"\x89PNG") for page in pages) else None
+
+    def put_pages(self, engine: Engine, text: str, dpi: int, pages: list[bytes]) -> None:
+        key = self._key(engine, text, dpi)
+        for index, page in enumerate(pages):
+            self._write(self.root / f"{key}.{index}.png", page)
+        self._write(self.root / f"{key}.pages", str(len(pages)).encode("ascii"))  # Écrit en dernier : entrée complète.
 
 
 _RENDERERS: list[PreviewRenderer] = []
