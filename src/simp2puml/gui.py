@@ -1033,6 +1033,10 @@ class App:
                  bg=C["surface"]).pack(side="left", padx=self.sp("l"))
         export = ttk.Frame(bar, style="Card.TFrame")
         export.pack(side="right")
+        # Proposé seulement avec le moteur Java alors qu'un exécutable natif existe pour ce système.
+        self.native_button = ttk.Button(bar, text="⚡  Accélérer l'aperçu", style="Ghost.TButton",
+                                        command=self.upgrade_engine)
+        self._upgrading = False
         self.export_box = ttk.Combobox(export, textvariable=self.export_var, state="readonly", width=24,
                                        style="Card.TCombobox", font=self.f_ui,
                                        values=[label for label, _, _ in render.FORMATS.values()])
@@ -1219,6 +1223,9 @@ class App:
         if kind == "progress":
             text, fraction = payload
             self.install_label.configure(text=text)
+            if self._upgrading:  # Passage au moteur natif : la carte d'installation n'est pas affichée.
+                percent = f" {round(fraction * 100)} %" if fraction is not None else ""
+                self.preview_status_var.set(text.rstrip("…") + percent)
             if fraction is None:
                 self.install_progress.configure(mode="indeterminate")
                 self.install_progress.start(12)
@@ -1227,20 +1234,29 @@ class App:
                 self.install_progress.configure(mode="determinate", value=fraction)
             return
         if kind == "installed":
-            self._installing = False
+            previous = self.engine
+            self._installing = self._upgrading = False
             self.engine, self._engine_checked = payload, True
             self.install_progress.stop()
             self.install_progress.pack_forget()
             self.install_button.state(["!disabled"])
-            self._set_status("Aperçu installé.", "ok")
+            if previous is not None and previous != payload:
+                render.cancel_all()  # Les processus de l'ancien moteur (Java) ne servent plus.
+            self._set_status("Moteur natif installé : aperçu accéléré." if payload.kind == "native"
+                             else "Aperçu installé.", "ok")
+            self.preview_status_var.set("")
+            self._refresh_native_button()
             self._request_preview()
             return
         if kind == "install-error":
-            self._installing = False
+            self._installing = self._upgrading = False
             self.install_progress.stop()
             self.install_progress.pack_forget()
             self.install_button.state(["!disabled"])
             self.install_label.configure(text=f"Échec : {payload}", fg=C["error"])
+            self.preview_status_var.set("")
+            self._set_status(f"Installation impossible : {payload}", "error")
+            self._refresh_native_button()
             return
         if kind == "exported":
             paths = payload
@@ -1257,6 +1273,7 @@ class App:
             return
         if kind == "engine":
             self.engine, self._engine_checked = payload, True
+            self._refresh_native_button()
             return
         if kind == "edit-saved":
             self._set_status(f"Version modifiée enregistrée : {payload}", "ok")
@@ -1271,6 +1288,7 @@ class App:
             waiting, self._preview_waiting = getattr(self, "_preview_waiting", False), False
             if self.engine is None and payload is not None:
                 self.engine, self._engine_checked = payload, True
+                self._refresh_native_button()
             if self.engine is not None and self.result is not None:
                 self._request_preview()  # Aperçu préparé d'avance (ou attendu par l'onglet).
             elif waiting:
@@ -1420,6 +1438,28 @@ class App:
         pad = 2 * self.sp("xl")
         fit = min((self.canvas.winfo_width() - pad) / natural_w, (self.canvas.winfo_height() - pad) / natural_h)
         self._set_zoom(max(minimum, min(fit, 2.0)))
+
+    def _refresh_native_button(self) -> None:
+        """« Accélérer l'aperçu » : moteur Java en service alors qu'un PlantUML natif existe pour ce système."""
+        offer = (self.engine is not None and self.engine.kind == "java" and render.native_build() is not None
+                 and not self._installing)
+        if offer and not self.native_button.winfo_ismapped():
+            self.native_button.pack(side="right", padx=(0, self.sp("m")))
+        elif not offer:
+            self.native_button.pack_forget()
+
+    def upgrade_engine(self) -> None:
+        build = render.native_build()
+        if build is None or self._installing:
+            return
+        if not messagebox.askyesno(
+                "simp2puml", f"L'aperçu utilise PlantUML avec Java. La version native (sans Java) dessine les "
+                             f"petits diagrammes environ 100 fois plus vite.\n\nTélécharger PlantUML natif "
+                             f"(≈ {build[2]} Mo, somme SHA-256 vérifiée) ?", parent=self.root):
+            return
+        self._upgrading = True
+        self.native_button.pack_forget()
+        self.install_engine()
 
     def install_engine(self) -> None:
         if self._installing:
