@@ -83,6 +83,22 @@ def test_rich_classes_defaults_stereotypes_roles_and_dependencies(tmp_path):
     validate_with_plantuml(text, tmp_path)
 
 
+def test_member_edit_dates_are_metadata_not_annotations(tmp_path):
+    # Forme observée dans un projet enregistré au profil 15.1 : chaque membre porte creation-date.
+    members = '''<attributes><attribute id="at" name="valeur" creation-date="10/28/2020 11:29:03"/></attributes>
+    <operations><operation id="op" name="Get" type="Integer" visibility="public" creation-date="10/28/2020 11:30:00">
+    <parameters><parameter id="pa" name="x" type="Integer" creation-date="10/28/2020 11:31:00"/></parameters>
+    </operation></operations>'''
+    text, warnings = convert('uml-class', item('a', 'class', 'A', members, **{'creation-date': '1/1/2020'}),
+                             version='15.1')
+    assert 'creation-date' not in text.split("' simp2puml-source")[0]
+    assert not any('propriétés supplémentaires' in w for w in warnings)
+    flagged = members.replace('name="Get"', 'name="Get" is-query="true"')
+    text, warnings = convert('uml-class', item('a', 'class', 'A', flagged), version='15.1')
+    assert 'Get.is-query = true' in text and any('propriétés supplémentaires' in w for w in warnings)
+    validate_with_plantuml(text, tmp_path)
+
+
 def test_nested_packages_duplicate_names_and_endpoint_from_graphic(tmp_path):
     items = item('p', 'package', 'P') + item('a', 'component', 'Same', owner='p')
     items += item('b', 'component', 'Same') + item('r', 'dependency')

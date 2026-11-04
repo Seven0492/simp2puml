@@ -429,7 +429,9 @@ class _Writer:
                 result.append(f'{key} = {value}')
         # Les membres ont leur propre noyau traduit. Toute extension conserve
         # sa valeur lisible au lieu de disparaître derrière le XML d'archive.
+        # Le profil 15.1 date aussi chaque membre : métadonnées d'édition, comme au niveau des éléments.
         member_keys = {'id', 'uid', 'cid', 'name', 'type', 'type-id', 'visibility',
+                       'creator', 'creation-date', 'modifier', 'modification-date', 'change-tracking-state',
                        'property-ref', 'static', 'is-static', 'abstract', 'is-abstract',
                        'multiplicity', 'default-value', 'initial-value', 'value',
                        'read-only', 'is-read-only', 'derived', 'is-derived',
