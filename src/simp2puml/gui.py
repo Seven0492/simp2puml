@@ -48,6 +48,9 @@ GOLDEN_TOP, GOLDEN_BOTTOM = 1000, round(1000 * PHI)
 PORTRAIT_HEIGHTS = (55, 89, 144, 233)  # Portraits en rectangle d'or (1 : φ).
 # Au-delà (en pixels), l'aperçu montre d'abord une ébauche à demi-résolution (rastérisation 4× plus rapide).
 DRAFT_PIXELS = 3_000_000
+# Résolution minimale de l'aperçu : 10 ppp ≈ zoom de 10 % (le plus petit autorisé), pour qu'« Ajuster »
+# montre vraiment tout un grand diagramme au lieu de s'arrêter à 25 %.
+MIN_DPI = 10
 
 
 def type_size(step: float, base: int = 10) -> int:
@@ -1100,7 +1103,7 @@ class App:
                     child.state(["!disabled"] if visible else ["disabled"])
 
     def _dpi(self) -> int:
-        return max(24, round(96 * self.scale * self.preview_zoom))
+        return max(MIN_DPI, round(96 * self.scale * self.preview_zoom))
 
     def _detect_engine(self) -> None:
         """Au démarrage : trouve le moteur et ouvre ses processus, pour un premier aperçu immédiat."""
@@ -1161,13 +1164,13 @@ class App:
                 if chosen is None:  # Premier aperçu d'un fichier : directement à la bonne taille.
                     fit = min((canvas[0] - margin) / (width * scale or 1), (canvas[1] - margin) / (height * scale or 1))
                     chosen = 1.0 if fit >= 1 else max(1 / PHI, fit)  # Pas sous 61,8 % : texte lisible.
-                dpi = max(24, round(96 * scale * chosen))
+                dpi = max(MIN_DPI, round(96 * scale * chosen))
                 key = (digest, dpi)
                 rendering = cache.get(key)
                 if rendering is None:
                     if width * height * (dpi / 96) ** 2 > DRAFT_PIXELS:
                         # Grand diagramme : ébauche à demi-résolution (4× moins de pixels), puis version nette.
-                        draft = renderer.png_pages(text, max(24, dpi // 2))
+                        draft = renderer.png_pages(text, max(MIN_DPI, dpi // 2))
                         if draft.pages:
                             put((generation, "draft", (key, draft, chosen)))
                     rendering = renderer.png_pages(text, dpi)
