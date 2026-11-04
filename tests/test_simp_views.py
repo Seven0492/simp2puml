@@ -1,5 +1,6 @@
 """Fixtures synthétiques, plus validations facultatives sans redistribuer SIMP."""
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -96,6 +97,27 @@ def test_member_edit_dates_are_metadata_not_annotations(tmp_path):
     flagged = members.replace('name="Get"', 'name="Get" is-query="true"')
     text, warnings = convert('uml-class', item('a', 'class', 'A', flagged), version='15.1')
     assert 'Get.is-query = true' in text and any('propriétés supplémentaires' in w for w in warnings)
+    validate_with_plantuml(text, tmp_path)
+
+
+def drawing_of(text):
+    return text.split("' simp2puml-source")[0]
+
+
+def test_generic_names_and_association_end_labels(tmp_path):
+    items = (item('gen', 'uml-interface-classifier', 'IComparable<T>')
+             + item('bad', 'class', 'X<img:http://exemple.invalid/a.png>')
+             + item('a', 'class', 'Plateau') + item('b', 'class', 'Case')
+             + item('assoc', 'relationship', body='''<relation from="a" to="b">
+               <start-role visibility="private" multiplicity="1"/>
+               <end-role name="cases" visibility="private" multiplicity="40"/></relation>'''))
+    text, _ = convert('uml-class', items)
+    drawing = drawing_of(text)
+    # Générique en notation UML ; un paramètre non sûr reste échappé (pas de balise Creole active).
+    assert 'interface "IComparable" as E1 <T>' in drawing
+    assert '<img' not in drawing and '<U+003C>img' in drawing
+    # Visibilité seule (valeur SIMP par défaut) : pas de « - » isolé ; avec un nom de rôle, gardée.
+    assert re.search(r'E3 "1" -(?:\w+-)?- "-cases\\n40" E4', drawing)
     validate_with_plantuml(text, tmp_path)
 
 

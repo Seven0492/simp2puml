@@ -7,6 +7,7 @@ ce n'est ni une instruction PlantUML, ni une promesse d'import inverse.
 """
 import json
 import math
+import re
 import xml.etree.ElementTree as ET
 
 from .model import ConversionError
@@ -47,6 +48,9 @@ _STATE_STEREO = {'initial-state': 'start', 'final-state': 'end', 'activity-final
                  'exit-point': 'exitPoint', 'terminate': 'end'}
 _STRUCTURAL = {'uml-class', 'uml-usecase', 'uml-component', 'uml-deployment', 'uml-object',
                'uml-package', 'uml-composite', 'uml-composite-structure', 'entity-relationship'}
+_CLASSIFIERS = {'class', 'abstract class', 'interface', 'enum'}
+# Nom générique « Nom<T, U> » : paramètres limités à des caractères sans effet en PlantUML.
+_GENERIC = re.compile(r'^([^<>]+?)<([\w ,.?]+)>$')
 
 
 def literal(value: str) -> str:
@@ -107,6 +111,14 @@ class _Writer:
         if not math.isfinite(number):
             raise ConversionError(f'Coordonnée {key} non finie pour {ident}')
         return number
+
+    def declaration(self, keyword: str, name: str, alias: str, stereotype: str) -> str:
+        """Déclaration PlantUML ; un classifieur générique utilise la notation UML <T> (cadre pointillé)."""
+        match = _GENERIC.match(name) if keyword in _CLASSIFIERS else None
+        if match:
+            params = ', '.join(p.strip() for p in match.group(2).split(','))
+            return f'{keyword} "{literal(match.group(1).strip())}" as {alias} <{params}>{stereotype}'
+        return f'{keyword} "{literal(name)}" as {alias}{stereotype}'
 
     def endpoints(self, ident: str, item: ET.Element) -> tuple[str | None, str | None]:
         nodes = [item]
@@ -301,7 +313,7 @@ class _Writer:
                     name += ' : ' + obj.get('classifier-name', '')
             if keyword == 'class' and _true(item, 'is-abstract', 'abstract'):
                 keyword = 'abstract class'
-            declaration = f'{keyword} "{literal(name)}" as {alias}{stereotype}'
+            declaration = self.declaration(keyword, name, alias, stereotype)
             if children.get(ident):
                 # PlantUML n'autorise pas un conteneur sur chaque symbole.
                 if keyword not in ('package', 'rectangle', 'node', 'component', 'artifact', 'state'):
