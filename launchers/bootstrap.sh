@@ -173,8 +173,17 @@ EOF
 
 PYTHON=""
 mkdir -p "$DATA"
-find_python
-[ -n "$PYTHON" ] || managed_python
+# Python mémorisé : pas de recherche (plusieurs lancements de Python) tant qu'il existe encore.
+CACHE="$DATA/python.txt"
+if [ -z "${SIMP2PUML_FORCE_MANAGED:-}" ] && [ -f "$CACHE" ]; then
+    cached=$(head -n 1 "$CACHE")
+    [ -x "$cached" ] && PYTHON=$cached
+fi
+if [ -z "$PYTHON" ]; then
+    find_python
+    [ -n "$PYTHON" ] || managed_python
+    printf '%s\n' "$PYTHON" >"$CACHE"
+fi
 if [ -n "${SIMP2PUML_NO_SHORTCUTS:-}" ]; then
     :
 elif [ "$SYSTEM" = macos ]; then

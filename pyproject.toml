@@ -19,12 +19,18 @@ dev = ["pytest>=8,<10", "build>=1,<2", "setuptools>=77"]
 [project.scripts]
 simp2puml = "simp2puml.cli:main"
 
+[project.gui-scripts]
+simp2puml-gui = "simp2puml.gui:main"
+
 [tool.setuptools.dynamic]
 version = {attr = "simp2puml.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["simp2puml*"]
+
+[tool.setuptools.package-data]
+simp2puml = ["assets/*.png", "assets/*.ico"]
 
 [tool.setuptools.data-files]
 "share/man/man1" = ["docs/simp2puml.1"]

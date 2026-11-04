@@ -28,6 +28,15 @@ def test_module_version_and_help(tmp_path):
     assert "expérimentale" in result.stdout
 
 
+def test_gui_entrypoint_is_declared_and_importable(tmp_path):
+    with (ROOT / "pyproject.toml").open("rb") as config_file:
+        config = tomllib.load(config_file)
+    assert config["project"]["gui-scripts"]["simp2puml-gui"] == "simp2puml.gui:main"
+    result = run_entrypoint(["-m", "simp2puml.gui", "--version"], tmp_path)
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"simp2puml-gui {__version__}"
+
+
 def test_manpage_is_configured_for_installation():
     with (ROOT / "pyproject.toml").open("rb") as config_file:
         config = tomllib.load(config_file)

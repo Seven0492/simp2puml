@@ -4,6 +4,10 @@ recursive-include tests *.py
 include docs/simp2puml.1
 recursive-include packaging *
 include tools/build-native.py
+include tools/build-icons.py
+include simp2puml-windows.cmd simp2puml-macos.command simp2puml-linux.sh .gitattributes
+recursive-include launchers *.sh *.ps1 *.pyw
+recursive-include src/simp2puml/assets *.png *.ico
 include examples/minimal.puml
 exclude Monopoly*
 exclude Classdiagram1.svg

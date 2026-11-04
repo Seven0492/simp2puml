@@ -1,5 +1,6 @@
 """CLI de conversion entre SIMP et PlantUML, avec export vers le DSL Atelier Diagrammes."""
 import argparse
+from collections.abc import Callable
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import tempfile
 
 from . import __version__
 from .atelier import write_atelier
-from .model import ConversionError
+from .model import ConversionError, UMLDiagram
 from .puml import parse_puml, write_puml
 from .simp import list_diagrams, parse_simp, write_simp
 
@@ -63,11 +64,14 @@ def _read_source(source: Path) -> str:
     return data.decode("utf-8-sig")
 
 
-def _publish(output: Path, content: str) -> None:
+def _publish(output: Path, content: str | bytes) -> None:
+    """Publie atomiquement ; `os.link` échoue si la sortie existe, sans jamais la remplacer."""
     temp_path = None
+    text_mode = {} if isinstance(content, bytes) else {"encoding": "utf-8", "newline": ""}
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=output.parent,
-                                         prefix=f".{output.name}.", suffix=".tmp", delete=False) as temp:
+        with tempfile.NamedTemporaryFile(mode="wb" if isinstance(content, bytes) else "w", **text_mode,
+                                         dir=output.parent, prefix=f".{output.name}.", suffix=".tmp",
+                                         delete=False) as temp:
             temp_path = Path(temp.name)
             temp.write(content)
             temp.flush()
@@ -79,6 +83,55 @@ def _publish(output: Path, content: str) -> None:
                 temp_path.unlink()
             except FileNotFoundError:
                 pass
+
+
+def convert(text: str, suffix: str, target: str, selectors: list[str | None],
+            report: Callable[[UMLDiagram], None] | None = None) -> tuple[str, list[UMLDiagram]]:
+    """Convertit en mémoire chaque sélection et renvoie le contenu joint avec les diagrammes lus.
+
+    `suffix` est l'extension source (`.simp` ou `.puml`) et `target` une clé de `TARGETS`.
+    `report` est appelé après chaque diagramme, avec ses avertissements renseignés.
+    Aucune écriture : la publication reste à la charge de l'appelant.
+    """
+    diagrams: list[UMLDiagram] = []
+    contents: list[str] = []
+    for selector in selectors:
+        diagram = parse_simp(text, diagram=selector) if suffix == ".simp" else parse_puml(text)
+        diagrams.append(diagram)
+        if target == "atelier":
+            contents.append(write_atelier(diagram))
+        elif target == "puml":
+            contents.append(write_puml(diagram))
+        else:
+            contents.append(write_simp(diagram))
+            diagram.warnings.append(EXPERIMENTAL_WARNING)
+        if report is not None:
+            report(diagram)
+    return "\n".join(contents), diagrams
+
+
+def summary_lines(diagrams: list[UMLDiagram]) -> list[str]:
+    """Décomptes indicatifs d'une conversion ; ce n'est pas un inventaire des pertes."""
+    lines: list[str] = []
+    classes = [cls for d in diagrams for cls in d.classes]
+    views = [d.source_view for d in diagrams if d.source_view is not None]
+    elements = [e for v in views for e in v.elements.values()]
+    lines.append(f"Classes : {sum(cls.kind == 'class' for cls in classes) + sum(e.get('type') == 'class' for e in elements)}")
+    relation_count = sum(v.relationship_count for v in views)
+    lines.append(f"Relations : {sum(len(d.relationships) for d in diagrams) + relation_count}")
+    for kind, label in (('interface', 'Interfaces'), ('enumeration', 'Énumérations'),
+                        ('interface_symbol', 'Symboles d’interface')):
+        source_kind = {'interface': 'uml-interface-classifier', 'enumeration': 'enumeration', 'interface_symbol': 'uml-interface'}[kind]
+        count = sum(cls.kind == kind for cls in classes) + sum(e.get('type') == source_kind for e in elements)
+        if count:
+            lines.append(f"{label} : {count}")
+    note_count = sum(len(d.notes) for d in diagrams) + sum(e.get('type') == 'comment' for e in elements)
+    if note_count:
+        lines.append(f"Notes : {note_count}")
+    if views:
+        lines.append(f"Éléments des vues enrichies : {sum(len(v.elements) for v in views)}")
+    lines.append(f"Avertissements : {sum(len(d.warnings) for d in diagrams)}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,22 +178,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ConversionError(f"la sortie existe déjà : {output}")
         text = _read_source(source)
         selectors = [ident for ident, _, _ in list_diagrams(text)] if args.all else [args.diagram]
-        diagrams = []
-        contents = []
-        for selector in selectors:
-            diagram = parse_simp(text, diagram=selector) if suffix == ".simp" else parse_puml(text)
-            diagrams.append(diagram)
-            if target == "atelier":
-                contents.append(write_atelier(diagram))
-            elif target == "puml":
-                contents.append(write_puml(diagram))
-            else:
-                contents.append(write_simp(diagram))
-                diagram.warnings.append(EXPERIMENTAL_WARNING)
+
+        def report(diagram: UMLDiagram) -> None:
             for warning in diagram.warnings:
                 context = f"{diagram.name} : " if args.all else ""
                 print(f"Avertissement : {context}{warning}", file=sys.stderr)
-        content = "\n".join(contents)
+
+        content, diagrams = convert(text, suffix, target, selectors, report)
         if args.strict and any(d.warnings for d in diagrams):
             raise ConversionError("mode strict : conversion refusée en présence d'avertissements")
         if not args.check:
@@ -152,24 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Vérification terminée (aucun fichier écrit)" if args.check else "Conversion terminée")
     if args.all:
         print(f"Diagrammes : {len(diagrams)}")
-    classes = [cls for d in diagrams for cls in d.classes]
-    views = [d.source_view for d in diagrams if d.source_view is not None]
-    elements = [e for v in views for e in v.elements.values()]
-    print(f"Classes : {sum(cls.kind == 'class' for cls in classes) + sum(e.get('type') == 'class' for e in elements)}")
-    relation_count = sum(v.relationship_count for v in views)
-    print(f"Relations : {sum(len(d.relationships) for d in diagrams) + relation_count}")
-    for kind, label in (('interface', 'Interfaces'), ('enumeration', 'Énumérations'),
-                        ('interface_symbol', 'Symboles d’interface')):
-        source_kind = {'interface': 'uml-interface-classifier', 'enumeration': 'enumeration', 'interface_symbol': 'uml-interface'}[kind]
-        count = sum(cls.kind == kind for cls in classes) + sum(e.get('type') == source_kind for e in elements)
-        if count:
-            print(f"{label} : {count}")
-    note_count = sum(len(d.notes) for d in diagrams) + sum(e.get('type') == 'comment' for e in elements)
-    if note_count:
-        print(f"Notes : {note_count}")
-    if views:
-        print(f"Éléments des vues enrichies : {sum(len(v.elements) for v in views)}")
-    print(f"Avertissements : {sum(len(d.warnings) for d in diagrams)}")
+    for line in summary_lines(diagrams):
+        print(line)
     if not args.check:
         print(f"Sortie : {output}")
     return 0
