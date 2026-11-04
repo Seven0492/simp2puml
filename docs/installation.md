@@ -38,6 +38,8 @@ Le lanceur utilise un Python ≥ 3.11 avec Tkinter s’il en trouve un. Sinon, i
 
 Désinstaller revient à supprimer ce dossier et le raccourci créé. Une connexion Internet n’est nécessaire qu’au premier lancement. Les raccourcis pointent vers le dossier extrait : relancer le lanceur après l’avoir déplacé.
 
+Sous Windows, le premier lancement passe par PowerShell ; les suivants n’en ont plus besoin : `simp2puml-windows.cmd` lit le Python mémorisé (`pythonw-cmd.txt` dans le dossier de données) et ouvre l’interface directement, en ≈ 0,15 s au lieu de ≈ 0,5 s, sans fenêtre de console qui reste ouverte. Si ce Python a disparu, ou si son chemin contient des caractères non ASCII, le lanceur repasse par PowerShell. Les raccourcis du menu Démarrer et du Bureau lancent aussi l’interface sans PowerShell.
+
 Le lanceur Windows a été vérifié sur Windows 11, avec et sans Python préinstallé. Les lanceurs macOS et Linux sont vérifiés par ShellCheck, mais n’ont pas encore été exécutés sur ces systèmes.
 
 ## Installer le convertisseur avec pipx
