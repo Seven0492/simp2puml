@@ -26,7 +26,11 @@ def test_shell_and_powershell_pin_the_same_versions():
 
 
 def test_entry_files_point_to_existing_bootstraps():
-    assert 'launchers\\bootstrap.ps1' in (ROOT / "simp2puml-windows.cmd").read_text(encoding="ascii")
+    cmd = (ROOT / "simp2puml-windows.cmd").read_text(encoding="ascii")
+    assert 'launchers\\bootstrap.ps1' in cmd
+    # Chemin rapide sans PowerShell : fichier écrit par bootstrap.ps1, lu par le .cmd.
+    assert 'pythonw-cmd.txt' in cmd and 'launchers\\start.pyw' in cmd
+    assert "'pythonw-cmd.txt'" in (LAUNCHERS / "bootstrap.ps1").read_text(encoding="utf-8-sig")
     for name in ("simp2puml-macos.command", "simp2puml-linux.sh"):
         text = (ROOT / name).read_text(encoding="utf-8")
         assert text.startswith("#!/bin/sh\n") and "launchers/bootstrap.sh" in text

@@ -122,6 +122,14 @@ if (-not $python) {
 # pythonw.exe ouvre l'interface sans fenêtre de console.
 $pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'
 if (-not (Test-Path $pythonw)) { $pythonw = $python }
+# Chemin rapide du lanceur .cmd (sans PowerShell) aux lancements suivants. Écrit en ASCII, seul encodage
+# lu sans ambiguïté par cmd.exe : un chemin avec accents garde simplement le chemin habituel.
+$FastPath = Join-Path $Data 'pythonw-cmd.txt'
+if ($pythonw -match '^[\x20-\x7E]+$' -and $pythonw -like '*pythonw.exe') {
+    Set-Content -Path $FastPath -Value $pythonw -Encoding ASCII -NoNewline
+} else {
+    Remove-Item $FastPath -ErrorAction SilentlyContinue
+}
 
 if (-not $env:SIMP2PUML_NO_SHORTCUTS) { try {
     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'simp2puml.lnk'
