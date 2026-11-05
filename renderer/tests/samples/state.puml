@@ -1,0 +1,15 @@
+@startuml
+[*] --> Inactif
+Inactif --> Actif : démarrer
+state Actif {
+  [*] --> Lecture
+  Lecture --> Pause : pause
+  Pause --> Lecture : reprendre
+}
+Actif --> Inactif : arrêter
+Actif --> [*]
+state Choix <<choice>>
+Inactif --> Choix
+Choix --> Actif : [ok]
+Inactif : en attente
+@enduml

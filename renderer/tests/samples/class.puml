@@ -1,0 +1,35 @@
+@startuml
+title Bibliothèque
+package "Domaine" {
+  abstract class Document {
+    - titre : String
+    # annee : int
+    + {abstract} resume() : String
+    + {static} compter() : int
+  }
+  class Livre extends Document {
+    - isbn : String
+  }
+  class Revue
+  interface Empruntable {
+    + emprunter(m : Membre)
+  }
+  enum Etat {
+    LIBRE
+    EMPRUNTE
+  }
+}
+class Membre <<entity>> {
+  nom : String
+  --
+  + inscrire()
+}
+Revue --|> Document
+Livre ..|> Empruntable
+Membre "1" o-- "0..*" Livre : emprunte >
+Document *-- Etat
+note right of Membre : Un membre peut\nemprunter 5 livres
+legend right
+  Exemple de légende
+endlegend
+@enduml

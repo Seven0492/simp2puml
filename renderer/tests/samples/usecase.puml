@@ -1,0 +1,14 @@
+@startuml
+left to right direction
+actor Client
+actor "Administrateur" as Admin
+rectangle Boutique {
+  usecase "Passer commande" as UC1
+  (Payer)
+  (Gérer catalogue) as UC3
+}
+Client --> UC1
+Client --> (Payer)
+Admin --> UC3
+UC1 .> (Payer) : <<include>>
+@enduml

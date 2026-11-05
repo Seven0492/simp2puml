@@ -1,0 +1,9 @@
+@startyaml
+nom: Alice
+roles:
+  - admin
+  - dev
+adresse:
+  ville: Lyon
+  cp: "69001"
+@endyaml

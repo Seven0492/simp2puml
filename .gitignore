@@ -14,3 +14,9 @@ dist/
 /Monopoly.simp
 /Classdiagram1.svg
 /examples/validation/
+
+# Éditeur GPUI (Rust) et moteur de rendu natif (Nim) : artefacts de construction
+/editor/target/
+/renderer/bin/
+/renderer/tests/test_render
+nimcache/

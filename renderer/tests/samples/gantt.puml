@@ -1,0 +1,11 @@
+@startgantt
+Project starts 2026-11-02
+[Analyse] lasts 4 days
+then [Conception] lasts 5 days
+[Développement] lasts 10 days and starts at [Conception]'s end
+[Développement] is 40% complete
+[Livraison] happens at [Développement]'s end
+-- Suivi --
+[Recette] lasts 3 days
+[Développement] -> [Recette]
+@endgantt

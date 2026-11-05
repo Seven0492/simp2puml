@@ -1,0 +1,24 @@
+@startuml
+autonumber
+actor Client
+participant "Serveur Web" as S #lightblue
+database BDD
+Client -> S : GET /panier
+activate S
+S -> BDD : SELECT articles
+BDD --> S : lignes
+alt panier vide
+  S --> Client : 204
+else
+  S -> S : calculer total
+  S --> Client : 200 JSON
+end
+deactivate S
+note over Client, S : session HTTP
+== Paiement ==
+Client ->> S : POST /payer
+...5 minutes plus tard...
+loop 3 fois
+  S -> BDD : vérifier
+end
+@enduml

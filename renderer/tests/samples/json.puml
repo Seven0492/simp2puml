@@ -1,0 +1,9 @@
+@startjson
+{
+  "nom": "Alice",
+  "age": 31,
+  "actif": true,
+  "adresse": { "ville": "Lyon", "cp": "69001" },
+  "tags": ["admin", "dev"]
+}
+@endjson

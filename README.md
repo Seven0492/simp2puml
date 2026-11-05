@@ -187,6 +187,31 @@ L’export SIMP reste expérimental et limité au modèle historique de classes 
 
 `--strict` refuse les approximations et pertes détectées, y compris le recalcul de mise en page signalé par les vues enrichies. Un avertissement peut concerner plusieurs éléments ; leur nombre n’est pas un décompte des éléments perdus. Vérifier la sortie dans l’outil cible avant de remplacer un document de travail.
 
+## Éditeur PlantUML (GPUI) et rendu natif (Nim)
+
+Le dépôt contient aussi un éditeur PlantUML de bureau, indépendant du paquet Python :
+
+- `editor/` : application Rust construite avec [GPUI](https://gpui.rs) (le cadriciel d'interface de Zed). Onglets, coloration syntaxique, numéros de ligne, annulation/rétablissement, recherche et remplacement, commentaire de lignes, duplication et déplacement de lignes, indentation automatique, modèles de diagrammes, aperçu en direct avec zoom, diagnostics par ligne, et navigation de l'aperçu vers le source (un clic sur un élément du diagramme place le curseur sur la ligne correspondante).
+- `renderer/` : moteur `pumlrender` écrit en Nim, qui produit le SVG de l'aperçu sans Java ni PlantUML. Il couvre les diagrammes de classes, d'objets, de séquence, d'activité (nouvelle syntaxe, et ancienne syntaxe `(*)` sous forme simplifiée), d'états, de cas d'utilisation, de composants/déploiement, les cartes mentales, WBS, Gantt, JSON et YAML. Les autres types (`salt`, `timing`, `ditaa`…) restent éditables mais affichent un aperçu de remplacement avec un avertissement.
+
+Le rendu natif n'est pas identique à celui de PlantUML : mise en page, styles et `skinparam` diffèrent, et une syntaxe non reconnue est signalée puis ignorée. Le préprocesseur PlantUML (`!include`, `!define`, `!theme`…) n'est jamais exécuté : ces lignes sont signalées et ignorées, et aucun fichier externe n'est chargé.
+
+Construire (Nim ≥ 1.6, Rust stable ; sous Linux, GPUI requiert notamment les en-têtes `libxkbcommon`, `wayland`, `vulkan`, `fontconfig` et `xcb`) :
+
+```sh
+cd renderer && nimble build        # ou : nim c -o:bin/pumlrender src/pumlrender.nim
+cd ../editor && cargo build --release
+./target/release/puml-editor diagramme.puml
+```
+
+L'éditeur cherche `pumlrender` dans `$PUMLRENDER`, à côté de l'exécutable, dans `renderer/bin/` du dépôt, puis dans le `PATH`. Le moteur s'utilise aussi seul : `pumlrender diagramme.puml -o diagramme.svg` (une sortie existante est refusée), `pumlrender --check diagramme.puml` pour les seuls diagnostics.
+
+Fichiers : « Enregistrer » remplace atomiquement le fichier ouvert ; « Exporter SVG » et « Exporter SIMP » refusent d'écraser un fichier existant. « Importer SIMP » (ou l'ouverture d'un `.simp`) passe par le convertisseur `simp2puml` (`$SIMP2PUML`, `PATH`, sinon `python3 -m simp2puml`) et ouvre le résultat dans un nouvel onglet non enregistré, sans rien écrire à côté de la source. L'export SIMP reste expérimental et limité au sous-ensemble strict de diagrammes de classes décrit plus haut. Sans portail XDG pour les sélecteurs de fichiers, l'éditeur propose une saisie de chemin.
+
+Raccourcis principaux (`Ctrl` sous Linux/Windows, `Cmd` sous macOS) : `Ctrl+N/O/S`, `Ctrl+Maj+S`, `Ctrl+W`, `Ctrl+Tab`, `Ctrl+F` (Entrée/F3 suivant), `Ctrl+Z`/`Ctrl+Y`, `Ctrl+/` (commenter), `Ctrl+D` (dupliquer), `Ctrl+Maj+K` (supprimer la ligne), `Alt+↑/↓` (déplacer), `Ctrl+E` (export SVG), `Ctrl+=`/`Ctrl+-`/`Ctrl+0`/`Ctrl+9` (zoom, ajuster), `Ctrl+J` (diagnostics), `Ctrl+T` (modèles), `Alt+PgUp/PgDn` (bloc @start précédent/suivant).
+
+Tests : `cd renderer && nimble test` (ou `nim c -r --path:src tests/test_render.nim`) et `cd editor && cargo test`.
+
 ## Développement
 
 Installer avec `python3 -m venv .venv` puis `.venv/bin/python -m pip install -r requirements-dev.txt`. Tests ciblés : `.venv/bin/python -m pytest -q tests/test_simp.py`, `test_puml.py` ou `test_cli.py`. Exécution : `.venv/bin/python -m simp2puml fichier.simp`. L’ancien `main.py` est conservé comme wrapper de compatibilité.

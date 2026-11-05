@@ -1,0 +1,25 @@
+@startuml
+start
+:Recevoir la commande;
+if (stock suffisant ?) then (oui)
+  :Préparer le colis;
+  fork
+    :Envoyer facture;
+  fork again
+    :Expédier;
+  end fork
+else (non)
+  :Commander au fournisseur;
+  note right: délai 3 jours
+endif
+while (autres articles ?) is (oui)
+  :Traiter l'article;
+endwhile (non)
+repeat
+  :Relancer le client;
+repeat while (pas de réponse ?) is (oui) not (non)
+partition Clôture {
+  :Archiver;
+}
+stop
+@enduml

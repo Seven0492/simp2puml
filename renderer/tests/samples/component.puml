@@ -1,0 +1,14 @@
+@startuml
+package "Frontend" {
+  [Interface Web] as Web
+}
+node "Serveur" {
+  [API] as API
+  database "PostgreSQL" as DB
+}
+cloud Internet
+HTTP - API
+Web --> HTTP
+API --> DB : SQL
+Internet ..> Web
+@enduml

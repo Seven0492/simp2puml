@@ -1,0 +1,23 @@
+[package]
+name = "puml-editor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Éditeur PlantUML GPUI avec aperçu natif rendu par pumlrender (Nim)"
+publish = false
+
+[[bin]]
+name = "puml-editor"
+path = "src/main.rs"
+
+[dependencies]
+gpui = "0.2.2"
+# mêmes versions que celles utilisées par gpui (contournement du rendu SVG en mémoire)
+image = { version = "0.25", default-features = false }
+smallvec = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

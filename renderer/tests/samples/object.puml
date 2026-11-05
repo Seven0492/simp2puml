@@ -1,0 +1,12 @@
+@startuml
+object utilisateur {
+  nom = "Alice"
+  age = 31
+}
+object commande
+map Capitales {
+  France => Paris
+  Italie => Rome
+}
+utilisateur --> commande
+@enduml
