@@ -8,12 +8,15 @@ type
     name, alias: string
     line: int
     start, duration: int
+    anchor: int  ## tâche dont le début sert de début (-1 : aucune)
     startKnown: bool
     milestone: bool
     complete: int
     color: string
     deps: seq[int]
     separator: bool
+
+const MaxDays = 3660  ## au-delà (dix ans), l'aperçu deviendrait démesuré
 
 proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
   var tasks: seq[Task]
@@ -23,6 +26,13 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
   var last = -1
   var links: seq[(int, int)]
 
+  proc bounded(n, line: int, what: string): int =
+    ## Borne un nombre de jours : une valeur démesurée, souvent saisie en
+    ## cours de frappe, ne doit pas bloquer l'aperçu.
+    result = clamp(n, 0, MaxDays)
+    if result != n:
+      ctx.warn(line, what & " hors de l'intervalle 0 à " & $MaxDays & " jours : valeur bornée")
+
   proc dateOffset(s: string, line: int): int =
     let t = s.strip()
     try:
@@ -31,7 +41,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
         ctx.warn(line, "date utilisée sans « Project starts » : origine au " & t)
         projectStart = d
         hasStart = true
-      return int((d - projectStart).inDays)
+      return bounded(int((d - projectStart).inDays), line, "début")
     except CatchableError:
       ctx.warn(line, "date non comprise : " & t)
       return 0
@@ -39,7 +49,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
   proc task(name: string, line: int): int =
     let key = name.strip()
     if key in byName: return byName[key]
-    tasks.add Task(name: key, line: line, duration: 1)
+    tasks.add Task(name: key, line: line, duration: 1, anchor: -1)
     byName[key] = tasks.high
     tasks.high
 
@@ -66,7 +76,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
         ctx.warn(l.num, "date de début non comprise (format AAAA-MM-JJ attendu)")
       continue
     if t.startsWith("--") and t.endsWith("--"):
-      tasks.add Task(name: t.strip(chars = {'-'}).strip(), line: l.num, separator: true)
+      tasks.add Task(name: t.strip(chars = {'-'}).strip(), line: l.num, separator: true, anchor: -1)
       continue
     if lw.contains(" are closed") or lw.contains(" is closed") or lw.contains(" are open") or
         lw.startsWith("printscale") or lw.startsWith("language") or lw.startsWith("projectscale") or
@@ -110,8 +120,9 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
         if toks.len >= 2:
           try:
             var n = parseInt(toks[1])
-            if toks.len >= 3 and toks[2].toLowerAscii().startsWith("week"): n *= 7
-            tasks[idx].duration = max(0, n)
+            if toks.len >= 3 and toks[2].toLowerAscii().startsWith("week"):
+              n = if n > MaxDays: n else: n * 7
+            tasks[idx].duration = bounded(n, l.num, "durée")
           except ValueError: ctx.warn(l.num, "durée non comprise : " & clause)
       elif cl.startsWith("starts") or cl.startsWith("happens"):
         let isMilestone = cl.startsWith("happens")
@@ -129,7 +140,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
           let other = readTask(r2)
           let o = task(other, l.num)
           if r2.toLowerAscii().contains("start"):
-            tasks[idx].start = -1000000 - o  # ancrage au début (résolu plus bas)
+            tasks[idx].anchor = o  # ancrage au début (résolu plus bas)
             tasks[idx].startKnown = true
           else:
             tasks[idx].deps.add o
@@ -138,7 +149,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
           tasks[idx].startKnown = true
         elif rl.startsWith("d+") or rl.startsWith("j+"):
           try:
-            tasks[idx].start = parseInt(r[2 .. ^1].strip())
+            tasks[idx].start = bounded(parseInt(r[2 .. ^1].strip()), l.num, "début")
             tasks[idx].startKnown = true
           except ValueError: discard
       elif cl.startsWith("ends") :
@@ -158,13 +169,16 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
   var resolved = newSeq[bool](tasks.len)
   proc resolve(i: int, depth = 0) =
     if resolved[i] or depth > tasks.len: return
-    if tasks[i].start <= -1000000:
-      let o = -(tasks[i].start + 1000000)
+    let o = tasks[i].anchor
+    if o >= 0 and o != i:
       resolve(o, depth + 1)
       tasks[i].start = tasks[o].start
     for d in tasks[i].deps:
       resolve(d, depth + 1)
       tasks[i].start = max(tasks[i].start, tasks[d].start + tasks[d].duration)
+    # une chaîne de dépendances peut encore dépasser la borne
+    tasks[i].start = min(tasks[i].start, MaxDays)
+    tasks[i].duration = min(tasks[i].duration, MaxDays)
     resolved[i] = true
   for i in 0 ..< tasks.len: resolve(i)
 
@@ -177,6 +191,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
       inc real
       span = max(span, t.start + max(t.duration, 1))
     nameW = max(nameW, textWidth(t.name, 12) + 20)
+  span = min(span, 2 * MaxDays)
   if tasks.len == 0: return (svg, 0.0, 0.0)
   let dayW = max(16.0, min(34.0, 760.0 / float(span)))
   let headH = if hasStart: 34.0 else: 22.0

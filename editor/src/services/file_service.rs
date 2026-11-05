@@ -146,15 +146,19 @@ fn run(mut cmd: Command) -> Result<Vec<String>, String> {
 }
 
 /// Importe un fichier .simp en texte PlantUML (sans rien écrire à côté de la source).
+/// Sans diagramme désigné, tous les diagrammes du projet sont importés, un bloc
+/// `@start…@end` chacun : le convertisseur refuserait sinon un projet qui en
+/// contient plusieurs.
 pub fn import_simp(source: &Path, diagram: Option<&str>) -> Result<Conversion, String> {
     let dir = TempDir::new()?;
     let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("diagramme");
     let out = dir.0.join(format!("{stem}.puml"));
     let mut cmd = converter();
     cmd.arg(source).arg("-o").arg(&out);
-    if let Some(d) = diagram {
-        cmd.arg("--diagram").arg(d);
-    }
+    match diagram {
+        Some(d) => cmd.arg("--diagram").arg(d),
+        None => cmd.arg("--all"),
+    };
     let messages = run(cmd)?;
     let text = read_text(&out)?;
     Ok(Conversion { text, messages })
@@ -188,6 +192,32 @@ mod tests {
         assert_eq!(read_text(&p).unwrap(), "3");
         let leftovers = fs::read_dir(&dir.0).unwrap().count();
         assert_eq!(leftovers, 1);
+    }
+
+    #[test]
+    fn import_simp_keeps_every_diagram() {
+        // projet synthétique à deux diagrammes (pas un fichier enregistré par l'application)
+        let dir = TempDir::new().unwrap();
+        let source = dir.0.join("deux.simp");
+        let view = |id: &str, class: &str| {
+            format!(
+                r#"<diagram id="{id}" name="{id}" type="uml-component"><abstract-items><item id="{class}" type="component" name="{class}"/></abstract-items><layer/></diagram>"#
+            )
+        };
+        let project = format!(
+            r#"<sim-project version="12.75" multi-file="no"><items/><models><model><abstract-items/>{}{}</model></models></sim-project>"#,
+            view("v1", "A"),
+            view("v2", "B")
+        );
+        fs::write(&source, project).unwrap();
+        match import_simp(&source, None) {
+            Ok(conv) => assert_eq!(conv.text.matches("@startuml").count(), 2, "{}", conv.text),
+            Err(e) if e.contains("introuvable") || e.contains("No module named") => {
+                eprintln!("convertisseur simp2puml absent : test ignoré ({e})");
+            }
+            Err(e) => panic!("{e}"),
+        }
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1, "rien n'est écrit près de la source");
     }
 
     #[test]

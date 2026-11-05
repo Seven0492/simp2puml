@@ -32,6 +32,8 @@ pub struct RenderService {
     server: Mutex<Option<Server>>,
     next_id: AtomicU64,
     serve_unsupported: AtomicBool,
+    /// vrai dès qu'une requête --serve a abouti
+    served: AtomicBool,
 }
 
 impl RenderService {
@@ -47,6 +49,7 @@ impl RenderService {
             server: Mutex::new(None),
             next_id: AtomicU64::new(1),
             serve_unsupported: AtomicBool::new(false),
+            served: AtomicBool::new(false),
         }
     }
 
@@ -63,12 +66,19 @@ impl RenderService {
             }
             let server = guard.as_mut().expect("processus démarré");
             match self.request(server, text, block) {
-                Ok(out) => return Ok(out),
+                Ok(out) => {
+                    self.served.store(true, Ordering::Relaxed);
+                    return Ok(out);
+                }
                 Err(e) => {
                     *guard = None;
                     if attempt == 1 {
-                        // le binaire ne gère probablement pas --serve
-                        self.serve_unsupported.store(true, Ordering::Relaxed);
+                        // Un moteur qui a déjà répondu gère --serve : l'échec vient
+                        // de ce document (le processus sera relancé au prochain rendu).
+                        // Sinon, le binaire ne connaît probablement pas --serve.
+                        if !self.served.load(Ordering::Relaxed) {
+                            self.serve_unsupported.store(true, Ordering::Relaxed);
+                        }
                         return render_once(&self.exe, text, block).map_err(|e2| format!("{e} ; {e2}"));
                     }
                 }

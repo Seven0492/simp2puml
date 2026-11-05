@@ -104,6 +104,21 @@ suite "séquence":
     let r = renderPuml("@startuml\nA -> B\nloop toujours\nA -> B\n@enduml\n")
     check r.errors.len == 1
 
+suite "gantt":
+  test "durée démesurée bornée":
+    let r = renderPuml("@startgantt\n[T] lasts 99999999 days\n@endgantt\n")
+    check r.errors.len == 0
+    check r.warnings.len == 1
+    check validSvg(r.svg)
+    check r.width < 3660.0 * 17 + 1000
+
+  test "début négatif ou lointain sans plantage":
+    let r = renderPuml("@startgantt\n[A] lasts 2 days\n[A] starts D+-2000000\n" &
+      "[B] starts D+99999999\n[C] starts at [A]'s start\n@endgantt\n")
+    check r.errors.len == 0
+    check r.warnings.len == 2
+    check validSvg(r.svg)
+
 suite "ligne de commande":
   const Bin = currentSourcePath().parentDir.parentDir / "bin" / "pumlrender"
   test "refuse d'écraser une sortie":
