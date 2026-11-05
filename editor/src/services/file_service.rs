@@ -1,4 +1,4 @@
-//! Entrées/sorties : lecture bornée, enregistrement atomique, export sans
+//! Service : fichiers — lecture bornée, enregistrement atomique, export sans
 //! écrasement et passerelle vers le convertisseur Python `simp2puml`.
 
 use std::fs;

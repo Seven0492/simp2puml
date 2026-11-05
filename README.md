@@ -191,8 +191,19 @@ L’export SIMP reste expérimental et limité au modèle historique de classes 
 
 Le dépôt contient aussi un éditeur PlantUML de bureau, indépendant du paquet Python :
 
-- `editor/` : application Rust construite avec [GPUI](https://gpui.rs) (le cadriciel d'interface de Zed). Onglets, coloration syntaxique, numéros de ligne, annulation/rétablissement, recherche et remplacement, commentaire de lignes, duplication et déplacement de lignes, indentation automatique, modèles de diagrammes, aperçu en direct avec zoom, diagnostics par ligne, et navigation de l'aperçu vers le source (un clic sur un élément du diagramme place le curseur sur la ligne correspondante).
+- `editor/` : application Rust construite avec [GPUI](https://gpui.rs) (le cadriciel d'interface de Zed). Onglets, coloration syntaxique, numéros de ligne, annulation/rétablissement, recherche et remplacement, commentaire de lignes, duplication et déplacement de lignes, indentation automatique, modèles de diagrammes, diagnostics par ligne, et aperçu **vectoriel** en direct : le SVG produit par le moteur est dessiné directement avec les primitives GPUI (formes, chemins, texte), sans image bitmap, et reste net à tout zoom. Un clic sur un élément du diagramme place le curseur sur la ligne correspondante ; Ctrl+molette zoome autour du pointeur, la molette ou un glisser fait défiler.
 - `renderer/` : moteur `pumlrender` écrit en Nim, qui produit le SVG de l'aperçu sans Java ni PlantUML. Il couvre les diagrammes de classes, d'objets, de séquence, d'activité (nouvelle syntaxe, et ancienne syntaxe `(*)` sous forme simplifiée), d'états, de cas d'utilisation, de composants/déploiement, les cartes mentales, WBS, Gantt, JSON et YAML. Les autres types (`salt`, `timing`, `ditaa`…) restent éditables mais affichent un aperçu de remplacement avec un avertissement.
+
+Organisation de l'éditeur (MVVM) :
+
+| Couche | Dossier | Rôle |
+| --- | --- | --- |
+| Modèle | `editor/src/model/` | tampon de texte, coloration, résultat de rendu, scène vectorielle lue depuis le SVG, modèles de diagrammes ; aucune dépendance à l'interface |
+| Services | `editor/src/services/` | processus `pumlrender`, fichiers et convertisseur `simp2puml` |
+| ViewModel | `editor/src/viewmodel/` | état présenté et commandes (édition, document et rendu, espace de travail) ; émet des évènements, ne dessine rien |
+| Vue | `editor/src/view/` | dessin GPUI et traduction clavier/souris en commandes ; dialogues et focus |
+
+Optimisations inspirées de Zed : processus de rendu persistant (`pumlrender --serve`, comme un serveur de langage) au lieu d'un processus par frappe ; rendu différé de 150 ms où seul le dernier résultat compte ; lecture du SVG et construction de la scène dans l'exécuteur d'arrière-plan ; index des lignes mis à jour de façon incrémentale ; coloration incrémentale et paresseuse ; seules les lignes visibles de l'éditeur et les éléments visibles de l'aperçu sont dessinés ; liste des diagnostics virtualisée.
 
 Le rendu natif n'est pas identique à celui de PlantUML : mise en page, styles et `skinparam` diffèrent, et une syntaxe non reconnue est signalée puis ignorée. Le préprocesseur PlantUML (`!include`, `!define`, `!theme`…) n'est jamais exécuté : ces lignes sont signalées et ignorées, et aucun fichier externe n'est chargé.
 
@@ -204,7 +215,7 @@ cd ../editor && cargo build --release
 ./target/release/puml-editor diagramme.puml
 ```
 
-L'éditeur cherche `pumlrender` dans `$PUMLRENDER`, à côté de l'exécutable, dans `renderer/bin/` du dépôt, puis dans le `PATH`. Le moteur s'utilise aussi seul : `pumlrender diagramme.puml -o diagramme.svg` (une sortie existante est refusée), `pumlrender --check diagramme.puml` pour les seuls diagnostics.
+L'éditeur cherche `pumlrender` dans `$PUMLRENDER`, à côté de l'exécutable, dans `renderer/bin/` du dépôt, puis dans le `PATH`. Le moteur s'utilise aussi seul : `pumlrender diagramme.puml -o diagramme.svg` (une sortie existante est refusée), `pumlrender --check diagramme.puml` pour les seuls diagnostics. `--serve` est le mode persistant utilisé par l'éditeur.
 
 Fichiers : « Enregistrer » remplace atomiquement le fichier ouvert ; « Exporter SVG » et « Exporter SIMP » refusent d'écraser un fichier existant. « Importer SIMP » (ou l'ouverture d'un `.simp`) passe par le convertisseur `simp2puml` (`$SIMP2PUML`, `PATH`, sinon `python3 -m simp2puml`) et ouvre le résultat dans un nouvel onglet non enregistré, sans rien écrire à côté de la source. L'export SIMP reste expérimental et limité au sous-ensemble strict de diagrammes de classes décrit plus haut. Sans portail XDG pour les sélecteurs de fichiers, l'éditeur propose une saisie de chemin.
 

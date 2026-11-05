@@ -1,5 +1,8 @@
-//! Tampon de texte de l'éditeur : contenu, sélection, annulation et
-//! opérations d'édition indépendantes de l'interface (testables sans GPUI).
+//! Modèle : tampon de texte (contenu, sélection, annulation, opérations
+//! d'édition), indépendant de l'interface et testable sans GPUI.
+//!
+//! Comme la `Rope` de Zed, l'index des débuts de ligne est mis à jour de
+//! façon incrémentale : une frappe ne relit jamais tout le document.
 
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -40,6 +43,9 @@ pub struct Buffer {
     redo_stack: Vec<Transaction>,
     last_edit: Option<(EditKind, Instant)>,
     version: u64,
+    /// Première ligne modifiée depuis le dernier `take_changed_from`
+    /// (consommée par le cache de coloration syntaxique).
+    changed_from: Option<usize>,
     saved_hash: u64,
     dirty_cache: Cell<(u64, bool)>,
 }
@@ -73,6 +79,7 @@ impl Buffer {
             redo_stack: Vec::new(),
             last_edit: None,
             version: 0,
+            changed_from: None,
             saved_hash: 0,
             dirty_cache: Cell::new((0, false)),
         };
@@ -89,6 +96,40 @@ impl Buffer {
                 self.line_starts.push(i + 1);
             }
         }
+    }
+
+    /// Met à jour l'index après remplacement de `start..start + old_len`
+    /// par `new`, sans relire le reste du texte.
+    fn splice_lines(&mut self, start: usize, old_len: usize, new: &str) {
+        let old_end = start + old_len;
+        // un début de ligne `s` suit un '\n' situé en s - 1 : ceux de la zone remplacée disparaissent
+        let lo = self.line_starts.partition_point(|&s| s <= start);
+        let hi = self.line_starts.partition_point(|&s| s <= old_end);
+        let delta = new.len() as isize - old_len as isize;
+        for s in &mut self.line_starts[hi..] {
+            *s = (*s as isize + delta) as usize;
+        }
+        let inserted = new.match_indices('\n').map(|(i, _)| start + i + 1);
+        self.line_starts.splice(lo..hi, inserted);
+        self.note_change(start);
+    }
+
+    /// Remplacement brut du texte avec mise à jour de l'index.
+    fn replace_raw(&mut self, range: Range<usize>, new: &str) {
+        let old_len = range.len();
+        let start = range.start;
+        self.text.replace_range(range, new);
+        self.splice_lines(start, old_len, new);
+    }
+
+    fn note_change(&mut self, offset: usize) {
+        let line = self.line_of(offset.min(self.text.len()));
+        self.changed_from = Some(self.changed_from.map_or(line, |l| l.min(line)));
+    }
+
+    /// Première ligne modifiée depuis le dernier appel (puis remise à zéro).
+    pub fn take_changed_from(&mut self) -> Option<usize> {
+        self.changed_from.take()
     }
 
     pub fn text(&self) -> &str {
@@ -405,8 +446,7 @@ impl Buffer {
             return;
         }
         let sel_before = self.selection.clone();
-        self.text.replace_range(range.clone(), new);
-        self.reindex();
+        self.replace_raw(range.clone(), new);
         let caret = range.start + new.len();
         self.selection = caret..caret;
         self.reversed = false;
@@ -453,7 +493,7 @@ impl Buffer {
             let start = (r.start as isize + delta) as usize;
             let end = (r.end as isize + delta) as usize;
             let old = self.text[start..end].to_string();
-            self.text.replace_range(start..end, &new);
+            self.replace_raw(start..end, &new);
             delta += new.len() as isize - (end - start) as isize;
             tx.edits.push(Edit {
                 range: start..start + new.len(),
@@ -466,7 +506,6 @@ impl Buffer {
         if tx.edits.is_empty() {
             return;
         }
-        self.reindex();
         self.selection = self.clamp(selection.start)..self.clamp(selection.end);
         self.reversed = false;
         self.version += 1;
@@ -689,9 +728,8 @@ impl Buffer {
             return false;
         };
         for e in tx.edits.iter().rev() {
-            self.text.replace_range(e.range.clone(), &e.old);
+            self.replace_raw(e.range.clone(), &e.old);
         }
-        self.reindex();
         let sel = tx.edits.first().map(|e| e.sel_before.clone()).unwrap_or(0..0);
         self.selection = self.clamp(sel.start)..self.clamp(sel.end);
         self.reversed = false;
@@ -707,9 +745,8 @@ impl Buffer {
         };
         for e in tx.edits.iter() {
             let r = e.range.start..e.range.start + e.old.len();
-            self.text.replace_range(r, &e.new);
+            self.replace_raw(r, &e.new);
         }
-        self.reindex();
         let sel = tx.edits.last().map(|e| e.sel_after.clone()).unwrap_or(0..0);
         self.selection = self.clamp(sel.start)..self.clamp(sel.end);
         self.reversed = false;
@@ -910,6 +947,30 @@ mod tests {
         assert_eq!(b.text(), "Carol -> Bob\nbob -> Carol");
         b.undo();
         assert_eq!(b.text(), "Alice -> Bob\nbob -> alice");
+    }
+
+    #[test]
+    fn incremental_line_index_matches_full_scan() {
+        let mut b = Buffer::new("a\nbb\nccc\n");
+        let edits: &[(usize, usize, &str)] = &[
+            (1, 1, "X\nY\n"),
+            (0, 0, "\n\n"),
+            (3, 4, ""),
+            (2, 0, "é\nü"),
+            (0, 5, "z"),
+        ];
+        for &(start, len, new) in edits {
+            let start = start.min(b.len());
+            let end = (start + len).min(b.len());
+            b.replace_range(start..end, new);
+            let mut full = Buffer::new(b.text());
+            full.reindex();
+            assert_eq!(b.line_starts, full.line_starts, "après {new:?}");
+        }
+        assert!(b.take_changed_from().is_some());
+        b.undo();
+        let full = Buffer::new(b.text());
+        assert_eq!(b.line_starts, full.line_starts);
     }
 
     #[test]

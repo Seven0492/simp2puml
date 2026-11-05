@@ -1,6 +1,13 @@
-//! Coloration syntaxique PlantUML, ligne par ligne, avec état de commentaire bloc.
+//! Modèle : coloration syntaxique PlantUML ligne par ligne.
+//!
+//! Le seul état transmis d'une ligne à la suivante est « dans un commentaire
+//! bloc ». `SyntaxCache` mémorise l'état de début de chaque ligne et ne le
+//! recalcule qu'à partir de la première ligne modifiée, et seulement jusqu'à
+//! la dernière ligne affichée (calcul paresseux, à la manière de Zed).
 
 use std::ops::Range;
+
+use super::buffer::Buffer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Token {
@@ -187,15 +194,38 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
     out
 }
 
-/// État de début de chaque ligne (pour les commentaires multilignes).
-pub fn line_states(text: &str) -> Vec<LineState> {
-    let mut states = Vec::new();
-    let mut st = LineState::default();
-    for line in text.split('\n') {
-        states.push(st);
-        highlight_line(line, &mut st);
+/// États de début de ligne, valides sur un préfixe du document.
+#[derive(Default)]
+pub struct SyntaxCache {
+    states: Vec<LineState>,
+}
+
+impl SyntaxCache {
+    /// Les états des lignes `0..=line` restent valides : une modification à
+    /// partir du début de `line` ne change pas l'état d'entrée de cette ligne.
+    pub fn invalidate_from(&mut self, line: usize) {
+        self.states.truncate(line + 1);
     }
-    states
+
+    /// État d'entrée de `line`, calculé à la demande depuis le dernier connu.
+    pub fn state_at(&mut self, buffer: &Buffer, line: usize) -> LineState {
+        if self.states.is_empty() {
+            self.states.push(LineState::default());
+        }
+        while self.states.len() <= line && self.states.len() <= buffer.line_count() {
+            let l = self.states.len() - 1;
+            let mut st = self.states[l];
+            highlight_line(buffer.line_text(l), &mut st);
+            self.states.push(st);
+        }
+        self.states[line.min(self.states.len() - 1)]
+    }
+
+    /// Segments colorés d'une ligne du tampon.
+    pub fn highlight(&mut self, buffer: &Buffer, line: usize) -> Vec<(Range<usize>, Token)> {
+        let mut st = self.state_at(buffer, line);
+        highlight_line(buffer.line_text(line), &mut st)
+    }
 }
 
 #[cfg(test)]
@@ -244,6 +274,17 @@ mod tests {
         let segs = highlight_line("fin '/ B", &mut st);
         assert_eq!(segs[0].1, Token::Comment);
         assert!(!st.in_block_comment);
+    }
+
+    #[test]
+    fn cache_recomputes_after_invalidation() {
+        let mut b = Buffer::new("a\n/' début\nb\nfin '/\nc");
+        let mut cache = SyntaxCache::default();
+        assert!(cache.state_at(&b, 2).in_block_comment);
+        assert!(!cache.state_at(&b, 4).in_block_comment);
+        b.replace_range(2..4, "");
+        cache.invalidate_from(b.take_changed_from().unwrap());
+        assert!(!cache.state_at(&b, 2).in_block_comment);
     }
 
     #[test]

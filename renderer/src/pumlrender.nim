@@ -19,6 +19,7 @@ Options :
   -b, --block=N          bloc @start…@end à rendre (1 par défaut)
       --check            n'afficher que les diagnostics
       --editor           protocole de l'éditeur (diagnostics, régions, SVG)
+      --serve            mode persistant pour l'éditeur (requêtes sur l'entrée)
   -h, --help             afficher cette aide
   -v, --version          afficher la version
 
@@ -28,8 +29,9 @@ Code de sortie : 0 sans erreur, 1 si le diagramme contient des erreurs,
 
 proc clean(s: string): string = s.multiReplace(("\t", " "), ("\n", " "), ("\r", " "))
 
-proc editorOutput(r: RenderResult): string =
+proc editorOutput(r: RenderResult, id = ""): string =
   result = "PUMLRENDER 1\n"
+  if id.len > 0: result.add "ID\t" & id & "\n"
   result.add "KIND\t" & $r.kind & "\n"
   result.add "BLOCKS\t" & $r.blocks & "\n"
   result.add "SIZE\t" & fmtF(r.width) & "\t" & fmtF(r.height) & "\n"
@@ -39,6 +41,30 @@ proc editorOutput(r: RenderResult): string =
     result.add "REGION\t" & $g.line & "\t" & fmtF(g.x) & "\t" & fmtF(g.y) & "\t" & fmtF(g.w) & "\t" & fmtF(g.h) & "\n"
   result.add "SVG\t" & $r.svg.len & "\n"
   result.add r.svg
+
+proc serve(): int =
+  ## Mode persistant (comme un serveur de langage) : une requête par message.
+  ##   requête : « RENDER <id> <bloc> <octets>\n » suivi du texte
+  ##   réponse : le protocole --editor précédé de « ID\t<id> »
+  var header: string
+  while stdin.readLine(header):
+    let parts = header.strip().split(' ')
+    if parts.len != 4 or parts[0] != "RENDER":
+      stdout.write "PUMLRENDER 1\nERROR\trequête invalide\n"
+      stdout.flushFile()
+      continue
+    var blockIdx, size: int
+    try:
+      blockIdx = parseInt(parts[2])
+      size = parseInt(parts[3])
+    except ValueError:
+      return 2
+    if size < 0 or size > MaxInput: return 2
+    var data = newString(size)
+    if size > 0 and stdin.readBuffer(addr data[0], size) != size: return 2
+    stdout.write editorOutput(renderPuml(data, max(0, blockIdx)), parts[1])
+    stdout.flushFile()
+  0
 
 proc main(): int =
   var input = ""
@@ -68,6 +94,7 @@ proc main(): int =
         except ValueError: raise newException(ValueError, "--block attend un entier")
       of "--check": check = true
       of "--editor": editor = true
+      of "--serve": return serve()
       of "-h", "--help":
         echo Usage
         return 0

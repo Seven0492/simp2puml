@@ -1,4 +1,4 @@
-//! Modèles de nouveaux diagrammes proposés par l'éditeur.
+//! Modèle : modèles de nouveaux diagrammes proposés par l'éditeur.
 
 pub struct Template {
     pub name: &'static str,

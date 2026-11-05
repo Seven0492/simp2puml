@@ -133,3 +133,16 @@ suite "ligne de commande":
       check code == 0
       check outp.startsWith("PUMLRENDER 1\nKIND\tsequence\n")
       check "\nSVG\t" in outp
+
+  test "mode persistant : plusieurs requêtes sur un même processus":
+    if not fileExists(Bin):
+      skip()
+    else:
+      let a = "@startuml\nA -> B\n@enduml\n"
+      let b = "@startmindmap\n* x\n@endmindmap\n"
+      let input = "RENDER 1 0 " & $a.len & "\n" & a & "RENDER 2 0 " & $b.len & "\n" & b
+      let (outp, code) = execCmdEx(quoteShell(Bin) & " --serve", input = input)
+      check code == 0
+      check outp.count("PUMLRENDER 1") == 2
+      check "ID\t1\nKIND\tsequence" in outp
+      check "ID\t2\nKIND\tmindmap" in outp
