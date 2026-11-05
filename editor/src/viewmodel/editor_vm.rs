@@ -9,6 +9,7 @@ use std::ops::Range;
 use gpui::{ClipboardItem, Context, EventEmitter, SharedString};
 
 use crate::model::buffer::Buffer;
+use crate::model::completion::{self, CompletionList};
 use crate::model::diagram::Severity;
 use crate::model::syntax::{SyntaxCache, Token};
 
@@ -44,6 +45,13 @@ pub enum Motion {
     DocEnd,
 }
 
+/// Menu d'autocomplétion ouvert.
+#[derive(Clone, Debug)]
+pub struct CompletionMenu {
+    pub list: CompletionList,
+    pub selected: usize,
+}
+
 /// Diagnostic affiché dans la gouttière (ligne 0-based).
 #[derive(Clone, Debug)]
 pub struct LineMark {
@@ -66,6 +74,7 @@ pub struct EditorViewModel {
     viewport: (f32, f32),
     /// Le curseur doit être ramené dans la zone visible au prochain affichage.
     autoscroll: bool,
+    pub completions: Option<CompletionMenu>,
 }
 
 impl EventEmitter<EditorEvent> for EditorViewModel {}
@@ -84,6 +93,7 @@ impl EditorViewModel {
             scroll_y: 0.0,
             viewport: (0.0, 0.0),
             autoscroll: true,
+            completions: None,
         }
     }
 
@@ -109,6 +119,7 @@ impl EditorViewModel {
     }
 
     fn moved(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         self.autoscroll = true;
         cx.emit(EditorEvent::CursorMoved);
         cx.notify();
@@ -173,6 +184,7 @@ impl EditorViewModel {
     // ------------------------------------------------------------ commandes : texte
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.completions = None;
         let text = if self.single_line { text.replace('\n', " ") } else { text.to_string() };
         self.buffer = Buffer::new(&text);
         self.syntax = SyntaxCache::default();
@@ -187,6 +199,13 @@ impl EditorViewModel {
         let text = if self.single_line { text.replace('\n', " ") } else { text.to_string() };
         self.buffer.replace_range(range.clone(), &text);
         self.marked_range = (mark && !text.is_empty()).then(|| range.start..range.start + text.len());
+        // frappe d'un caractère de mot, d'un « @ » ou d'une flèche : (ré)ouvrir le menu
+        let typing = !mark && !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || "_@-.<>|*".contains(c));
+        if typing && !self.single_line {
+            self.refresh_completions(false);
+        } else {
+            self.completions = None;
+        }
         self.changed(cx);
     }
 
@@ -196,10 +215,15 @@ impl EditorViewModel {
         } else {
             self.buffer.delete_forward(word);
         }
+        // en effaçant, le menu ouvert suit le préfixe
+        if self.completions.is_some() {
+            self.refresh_completions(false);
+        }
         self.changed(cx);
     }
 
     pub fn newline(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         if self.single_line {
             cx.emit(EditorEvent::Submit);
         } else {
@@ -209,6 +233,7 @@ impl EditorViewModel {
     }
 
     pub fn indent(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         if self.single_line {
             cx.emit(EditorEvent::FocusNext);
         } else {
@@ -218,6 +243,7 @@ impl EditorViewModel {
     }
 
     pub fn outdent(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         if self.single_line {
             cx.emit(EditorEvent::FocusPrev);
         } else {
@@ -228,6 +254,7 @@ impl EditorViewModel {
 
     /// Opérations sur des lignes entières (sans effet dans un champ simple).
     pub fn line_op(&mut self, op: fn(&mut Buffer), cx: &mut Context<Self>) {
+        self.completions = None;
         if !self.single_line {
             op(&mut self.buffer);
             self.changed(cx);
@@ -235,18 +262,21 @@ impl EditorViewModel {
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         if self.buffer.undo() {
             self.changed(cx);
         }
     }
 
     pub fn redo(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         if self.buffer.redo() {
             self.changed(cx);
         }
     }
 
     pub fn replace_all(&mut self, query: &str, with: &str, cx: &mut Context<Self>) -> usize {
+        self.completions = None;
         let n = self.buffer.replace_all(query, with);
         if n > 0 {
             self.changed(cx);
@@ -263,6 +293,7 @@ impl EditorViewModel {
     }
 
     pub fn cut(&mut self, cx: &mut Context<Self>) {
+        self.completions = None;
         let Some(text) = self.clipboard_text() else { return };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         if self.buffer.has_selection() {
@@ -365,8 +396,67 @@ impl EditorViewModel {
         let indent = text.len() - text.trim_start().len();
         let start = self.buffer.line_start(l);
         self.buffer.set_cursor(start + indent);
-        self.scroll_y = (l as f32 * LINE_HEIGHT - self.viewport.1 / 3.0).max(0.0);
+        // centrer la ligne seulement si elle est hors de la zone visible
+        let y = l as f32 * LINE_HEIGHT;
+        let height = self.viewport.1;
+        if height > 0.0 && (y < self.scroll_y || y + LINE_HEIGHT > self.scroll_y + height) {
+            self.scroll_y = (y - height / 3.0).max(0.0);
+        }
         self.moved(cx);
+    }
+
+    // ------------------------------------------------------------ commandes : autocomplétion
+
+    fn refresh_completions(&mut self, explicit: bool) {
+        let cursor = self.buffer.cursor();
+        let selected_label = self
+            .completions
+            .as_ref()
+            .and_then(|m| m.list.items.get(m.selected))
+            .map(|c| c.label.clone());
+        self.completions = completion::complete(self.buffer.text(), cursor, explicit).map(|list| {
+            // conserver l'élément sélectionné s'il est toujours proposé
+            let selected = selected_label
+                .and_then(|l| list.items.iter().position(|c| c.label == l))
+                .unwrap_or(0);
+            CompletionMenu { list, selected }
+        });
+    }
+
+    /// Ctrl+Espace : ouvre le menu même sans préfixe.
+    pub fn show_completions(&mut self, cx: &mut Context<Self>) {
+        if !self.single_line {
+            self.refresh_completions(true);
+            cx.notify();
+        }
+    }
+
+    pub fn select_completion(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.completions {
+            let n = menu.list.items.len() as isize;
+            menu.selected = (menu.selected as isize + delta).rem_euclid(n) as usize;
+            cx.notify();
+        }
+    }
+
+    pub fn dismiss_completions(&mut self, cx: &mut Context<Self>) {
+        if self.completions.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Insère la proposition (celle sélectionnée par défaut).
+    pub fn confirm_completion(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        let Some(menu) = self.completions.take() else { return };
+        let Some(item) = menu.list.items.get(index.unwrap_or(menu.selected)) else { return };
+        let range = menu.list.range.clone();
+        let line = self.buffer.line_of(range.start);
+        let line_text = self.buffer.line_text(line);
+        let indent: String = line_text.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let (text, cursor) = completion::expand(&item.insert, &indent);
+        self.buffer.replace_range(range.clone(), &text);
+        self.buffer.set_cursor(range.start + cursor);
+        self.changed(cx);
     }
 
     /// Plages de toutes les occurrences (pour le surlignage de recherche).

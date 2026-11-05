@@ -191,14 +191,14 @@ L’export SIMP reste expérimental et limité au modèle historique de classes 
 
 Le dépôt contient aussi un éditeur PlantUML de bureau, indépendant du paquet Python :
 
-- `editor/` : application Rust construite avec [GPUI](https://gpui.rs) (le cadriciel d'interface de Zed). Onglets, coloration syntaxique, numéros de ligne, annulation/rétablissement, recherche et remplacement, commentaire de lignes, duplication et déplacement de lignes, indentation automatique, modèles de diagrammes, diagnostics par ligne, et aperçu **vectoriel** en direct : le SVG produit par le moteur est dessiné directement avec les primitives GPUI (formes, chemins, texte), sans image bitmap, et reste net à tout zoom. Un clic sur un élément du diagramme place le curseur sur la ligne correspondante ; Ctrl+molette zoome autour du pointeur, la molette ou un glisser fait défiler.
+- `editor/` : application Rust construite avec [GPUI](https://gpui.rs) (le cadriciel d'interface de Zed). Onglets, coloration syntaxique, autocomplétion (mots-clés selon le contexte, noms déclarés dans le document, flèches, extraits, avec correspondance approximative), numéros de ligne, annulation/rétablissement, recherche et remplacement, commentaire de lignes, duplication et déplacement de lignes, indentation automatique, modèles de diagrammes, diagnostics par ligne, et aperçu **vectoriel** en direct : le SVG produit par le moteur est dessiné directement avec les primitives GPUI (formes, chemins, texte), sans image bitmap, et reste net à tout zoom. Un clic sur un élément du diagramme place le curseur sur la ligne correspondante ; Ctrl+molette zoome autour du pointeur, la molette ou un glisser fait défiler.
 - `renderer/` : moteur `pumlrender` écrit en Nim, qui produit le SVG de l'aperçu sans Java ni PlantUML. Il couvre les diagrammes de classes, d'objets, de séquence, d'activité (nouvelle syntaxe, et ancienne syntaxe `(*)` sous forme simplifiée), d'états, de cas d'utilisation, de composants/déploiement, les cartes mentales, WBS, Gantt, JSON et YAML. Les autres types (`salt`, `timing`, `ditaa`…) restent éditables mais affichent un aperçu de remplacement avec un avertissement.
 
 Organisation de l'éditeur (MVVM) :
 
 | Couche | Dossier | Rôle |
 | --- | --- | --- |
-| Modèle | `editor/src/model/` | tampon de texte, coloration, résultat de rendu, scène vectorielle lue depuis le SVG, modèles de diagrammes ; aucune dépendance à l'interface |
+| Modèle | `editor/src/model/` | tampon de texte, coloration, autocomplétion, résultat de rendu, scène vectorielle lue depuis le SVG, modèles de diagrammes ; aucune dépendance à l'interface |
 | Services | `editor/src/services/` | processus `pumlrender`, fichiers et convertisseur `simp2puml` |
 | ViewModel | `editor/src/viewmodel/` | état présenté et commandes (édition, document et rendu, espace de travail) ; émet des évènements, ne dessine rien |
 | Vue | `editor/src/view/` | dessin GPUI et traduction clavier/souris en commandes ; dialogues et focus |
@@ -219,7 +219,7 @@ L'éditeur cherche `pumlrender` dans `$PUMLRENDER`, à côté de l'exécutable, 
 
 Fichiers : « Enregistrer » remplace atomiquement le fichier ouvert ; « Exporter SVG » et « Exporter SIMP » refusent d'écraser un fichier existant. « Importer SIMP » (ou l'ouverture d'un `.simp`) passe par le convertisseur `simp2puml` (`$SIMP2PUML`, `PATH`, sinon `python3 -m simp2puml`) et ouvre le résultat dans un nouvel onglet non enregistré, sans rien écrire à côté de la source. L'export SIMP reste expérimental et limité au sous-ensemble strict de diagrammes de classes décrit plus haut. Sans portail XDG pour les sélecteurs de fichiers, l'éditeur propose une saisie de chemin.
 
-Raccourcis principaux (`Ctrl` sous Linux/Windows, `Cmd` sous macOS) : `Ctrl+N/O/S`, `Ctrl+Maj+S`, `Ctrl+W`, `Ctrl+Tab`, `Ctrl+F` (Entrée/F3 suivant), `Ctrl+Z`/`Ctrl+Y`, `Ctrl+/` (commenter), `Ctrl+D` (dupliquer), `Ctrl+Maj+K` (supprimer la ligne), `Alt+↑/↓` (déplacer), `Ctrl+E` (export SVG), `Ctrl+=`/`Ctrl+-`/`Ctrl+0`/`Ctrl+9` (zoom, ajuster), `Ctrl+J` (diagnostics), `Ctrl+T` (modèles), `Alt+PgUp/PgDn` (bloc @start précédent/suivant).
+Raccourcis principaux (`Ctrl` sous Linux/Windows, `Cmd` sous macOS) : `Ctrl+N/O/S`, `Ctrl+Maj+S`, `Ctrl+W`, `Ctrl+Tab`, `Ctrl+F` (Entrée/F3 suivant), `Ctrl+Z`/`Ctrl+Y`, `Ctrl+/` (commenter), `Ctrl+D` (dupliquer), `Ctrl+Maj+K` (supprimer la ligne), `Alt+↑/↓` (déplacer), `Ctrl+E` (export SVG), `Ctrl+=`/`Ctrl+-`/`Ctrl+0`/`Ctrl+9` (zoom, ajuster), `Ctrl+J` (diagnostics), `Ctrl+T` (modèles), `Alt+PgUp/PgDn` (bloc @start précédent/suivant). Autocomplétion : le menu s'ouvre en tapant (ou `Ctrl+Espace`), `↑/↓` pour choisir, `Entrée`/`Tab` pour insérer, `Échap` pour fermer.
 
 Tests : `cd renderer && nimble test` (ou `nim c -r --path:src tests/test_render.nim`) et `cd editor && cargo test`.
 

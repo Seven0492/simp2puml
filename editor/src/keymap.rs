@@ -66,6 +66,15 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", e::MoveLineUp, ed),
         KeyBinding::new("alt-down", e::MoveLineDown, ed),
         KeyBinding::new("shift-enter", w::FindPrev, field),
+        KeyBinding::new("ctrl-space", e::ShowCompletions, ed),
+        // menu d'autocomplétion ouvert : ces touches agissent sur le menu
+        KeyBinding::new("up", e::SelectPrevCompletion, Some("TextEditor && showing_completions")),
+        KeyBinding::new("down", e::SelectNextCompletion, Some("TextEditor && showing_completions")),
+        KeyBinding::new("ctrl-p", e::SelectPrevCompletion, Some("TextEditor && showing_completions")),
+        KeyBinding::new("ctrl-n", e::SelectNextCompletion, Some("TextEditor && showing_completions")),
+        KeyBinding::new("enter", e::ConfirmCompletion, Some("TextEditor && showing_completions")),
+        KeyBinding::new("tab", e::ConfirmCompletion, Some("TextEditor && showing_completions")),
+        KeyBinding::new("escape", e::DismissCompletions, Some("TextEditor && showing_completions")),
         // espace de travail (actifs partout)
         KeyBinding::new("secondary-n", w::NewFile, None),
         KeyBinding::new("secondary-o", w::OpenFile, None),

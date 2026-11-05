@@ -13,6 +13,7 @@ actions!(
         Newline, Tab, Outdent, Escape,
         Copy, Cut, Paste, Undo, Redo,
         ToggleComment, DuplicateLine, DeleteLine, MoveLineUp, MoveLineDown,
+        ShowCompletions, ConfirmCompletion, SelectNextCompletion, SelectPrevCompletion, DismissCompletions,
     ]
 );
 

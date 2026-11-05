@@ -17,6 +17,7 @@ use gpui::{
 };
 
 use super::actions::*;
+use super::completion_menu::completion_menu;
 use super::theme;
 use crate::model::diagram::Severity;
 use crate::model::syntax::Token;
@@ -29,6 +30,8 @@ struct LayoutCache {
     bounds: Option<Bounds<Pixels>>,
     lines: Vec<(usize, ShapedLine)>,
     text_x: f32,
+    /// Coin inférieur gauche du curseur (fenêtre), pour placer le menu.
+    cursor_anchor: Option<Point<Pixels>>,
 }
 
 pub struct EditorView {
@@ -333,7 +336,8 @@ impl Element for EditorElement {
 
         let view_lines = lines.iter().enumerate().map(|(i, vl)| (first + i, vl.shaped.clone())).collect();
         self.view.update(cx, |view, _| {
-            view.layout = LayoutCache { bounds: Some(bounds), lines: view_lines, text_x };
+            let cursor_anchor = cursor.map(|c| point(c.left(), c.bottom() + px(2.0)));
+            view.layout = LayoutCache { bounds: Some(bounds), lines: view_lines, text_x, cursor_anchor };
         });
         Frame { lines, gutter_w, text_x, selections, matches, cursor, current_line, marks, placeholder }
     }
@@ -411,11 +415,21 @@ macro_rules! bind_commands {
 }
 
 impl Render for EditorView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let single = self.vm.read(cx).single_line;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (single, showing_completions) = {
+            let vm = self.vm.read(cx);
+            (vm.single_line, vm.completions.is_some())
+        };
         let el = div()
             .id("editor")
-            .key_context(if single { "TextInput" } else { "TextEditor" })
+            .key_context({
+                let mut context = gpui::KeyContext::new_with_defaults();
+                context.add(if single { "TextInput" } else { "TextEditor" });
+                if showing_completions {
+                    context.add("showing_completions");
+                }
+                context
+            })
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .size_full()
@@ -466,7 +480,16 @@ impl Render for EditorView {
             DeleteLine => |vm, cx| vm.line_op(|b| b.delete_lines(), cx),
             MoveLineUp => |vm, cx| vm.line_op(|b| b.move_lines(false), cx),
             MoveLineDown => |vm, cx| vm.line_op(|b| b.move_lines(true), cx),
+            ShowCompletions => |vm, cx| vm.show_completions(cx),
+            ConfirmCompletion => |vm, cx| vm.confirm_completion(None, cx),
+            SelectNextCompletion => |vm, cx| vm.select_completion(1, cx),
+            SelectPrevCompletion => |vm, cx| vm.select_completion(-1, cx),
+            DismissCompletions => |vm, cx| vm.dismiss_completions(cx),
         });
-        el.child(EditorElement { view: cx.entity() })
+        let menu = match (self.vm.read(cx).completions.clone(), self.layout.cursor_anchor) {
+            (Some(menu), Some(anchor)) if self.focus_handle.is_focused(window) => Some(completion_menu(&menu, anchor, self.vm.clone())),
+            _ => None,
+        };
+        el.child(EditorElement { view: cx.entity() }).children(menu)
     }
 }

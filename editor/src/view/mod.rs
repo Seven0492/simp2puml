@@ -2,6 +2,7 @@
 //! commandes de ViewModel. Aucune règle métier ici.
 
 pub mod actions;
+pub mod completion_menu;
 pub mod components;
 pub mod editor_view;
 pub mod preview_view;
