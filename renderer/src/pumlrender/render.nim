@@ -12,6 +12,7 @@ type RenderResult* = object
 
 proc renderPuml*(text: string, blockIndex = 0): RenderResult =
   let ctx = newContext()
+  let text = if text.startsWith("\xEF\xBB\xBF"): text[3 .. ^1] else: text
   let doc = prepare(text, ctx, blockIndex)
   result.blocks = max(1, findBlocks(text).len)
   var inner: Svg
@@ -47,7 +48,9 @@ proc renderPuml*(text: string, blockIndex = 0): RenderResult =
       (inner, w, h) = placeholder(ctx, "@start" & doc.tag, "Aperçu natif non disponible pour ce type")
     of dkEmpty:
       (inner, w, h) = placeholder(ctx, "Diagramme vide", "Ajoutez des éléments entre @startuml et @enduml")
-  except CatchableError as e:
+  except Exception as e:
+    # Exception couvre aussi les Defect (index, débordement) : un défaut du
+    # moteur devient un diagnostic au lieu de tuer le processus de l'éditeur
     ctx.error(doc.startLine, "erreur interne du rendu : " & e.msg)
     (inner, w, h) = placeholder(ctx, "Erreur de rendu", e.msg)
   if w <= 0 or h <= 0:

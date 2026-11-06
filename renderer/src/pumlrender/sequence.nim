@@ -145,9 +145,9 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         autonum = true
         let toks = rest.splitWhitespace()
         if toks.len > 0:
-          try: autonumVal = parseInt(toks[0]) except ValueError: discard
+          try: autonumVal = clamp(parseInt(toks[0]), -1_000_000_000, 1_000_000_000) except ValueError: discard
         if toks.len > 1:
-          try: autonumStep = parseInt(toks[1]) except ValueError: discard
+          try: autonumStep = clamp(parseInt(toks[1]), -1_000_000, 1_000_000) except ValueError: discard
       continue
     if lw.startsWith("autoactivate"):
       autoActivate = lw.contains("on")
@@ -248,7 +248,8 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
             if events[k].kind == evMsg:
               let a = events[k].a
               let b = events[k].b
-              if side == "left": span = @[(if a >= 0: a else: b)]
+              # b < 0 marque un retour ou un message vers l'extérieur
+              if side == "left": span = @[(if a >= 0: a elif b >= 0: b else: 0)]
               else: span = @[(if b >= 0: b elif a >= 0: a else: 0)]
               break
           if span.len == 0 and parts.len > 0: span = @[0]

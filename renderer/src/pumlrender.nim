@@ -4,7 +4,10 @@
 ##
 ## Sans fichier, lit l'entrée standard. Le SVG est écrit sur la sortie
 ## standard, ou dans le fichier indiqué par -o (jamais écrasé).
-import std/[os, strutils]
+import std/[os, strutils, monotimes]
+when defined(posix):
+  import std/posix
+  var O_NOFOLLOW {.importc, header: "<fcntl.h>".}: cint
 import pumlrender/[common, render]
 
 const Version* = "0.1.0"
@@ -46,25 +49,85 @@ proc serve(): int =
   ## Mode persistant (comme un serveur de langage) : une requête par message.
   ##   requête : « RENDER <id> <bloc> <octets>\n » suivi du texte
   ##   réponse : le protocole --editor précédé de « ID\t<id> »
+  ## Une requête invalide reçoit une réponse ERROR ; le serveur continue.
+  proc reply(id, msg: string) =
+    stdout.write "PUMLRENDER 1\n" & (if id.len > 0: "ID\t" & clean(id) & "\n" else: "") & "ERROR\t" & clean(msg) & "\n"
+    stdout.flushFile()
   var header: string
   while stdin.readLine(header):
-    let parts = header.strip().split(' ')
+    let parts = header.splitWhitespace()
     if parts.len != 4 or parts[0] != "RENDER":
-      stdout.write "PUMLRENDER 1\nERROR\trequête invalide\n"
-      stdout.flushFile()
+      reply("", "requête invalide")
       continue
     var blockIdx, size: int
     try:
       blockIdx = parseInt(parts[2])
       size = parseInt(parts[3])
     except ValueError:
-      return 2
-    if size < 0 or size > MaxInput: return 2
+      # longueur inconnue : impossible de sauter le texte, on répond et continue
+      reply(parts[1], "requête invalide (nombre attendu)")
+      continue
+    if size < 0:
+      reply(parts[1], "longueur négative")
+      continue
+    if size > MaxInput:
+      # lire et jeter le texte pour rester synchronisé
+      var left = size
+      var buf = newString(65536)
+      while left > 0:
+        let n = stdin.readBuffer(addr buf[0], min(left, buf.len))
+        if n <= 0: return 2
+        left -= n
+      reply(parts[1], "entrée trop volumineuse (maximum : 20 MiB)")
+      continue
     var data = newString(size)
     if size > 0 and stdin.readBuffer(addr data[0], size) != size: return 2
     stdout.write editorOutput(renderPuml(data, max(0, blockIdx)), parts[1])
     stdout.flushFile()
   0
+
+proc readBounded(f: File): string =
+  ## Lit au plus MaxInput + 1 octets (pour détecter un dépassement sans tout lire).
+  result = newString(MaxInput + 1)
+  var n = 0
+  while n < result.len:
+    let r = f.readBuffer(addr result[n], result.len - n)
+    if r <= 0: break
+    n += r
+  result.setLen(n)
+
+proc writeNew(output, content: string) =
+  ## Écrit une nouvelle sortie sans jamais écraser ni suivre de lien : fichier
+  ## temporaire créé en exclusivité, puis lien dur (échoue si la sortie existe).
+  when defined(posix):
+    proc fail(what: string) = raise newException(IOError, what & " : " & $strerror(errno))
+    proc writeAll(fd: cint) =
+      var off = 0
+      while off < content.len:
+        let w = posix.write(fd, unsafeAddr content[off], content.len - off)
+        if w <= 0: fail(output)
+        off += w
+      discard fsync(fd)
+    let flags = O_WRONLY or O_CREAT or O_EXCL or O_NOFOLLOW
+    let tmp = output & ".tmp" & $getCurrentProcessId() & "-" & $getMonoTime().ticks
+    let fd = posix.open(tmp.cstring, flags, 0o644)
+    if fd < 0: fail(tmp)
+    try: writeAll(fd)
+    finally: discard posix.close(fd)
+    let linked = link(tmp.cstring, output.cstring)
+    let err = errno
+    discard unlink(tmp.cstring)
+    if linked == 0: return
+    if err == EEXIST: raise newException(IOError, "la sortie existe déjà : " & output)
+    if err notin [EPERM, EOPNOTSUPP]: errno = err; fail(output)
+    # système de fichiers sans liens durs : création exclusive directe
+    let fd2 = posix.open(output.cstring, flags, 0o644)
+    if fd2 < 0: fail(output)
+    try: writeAll(fd2)
+    finally: discard posix.close(fd2)
+  else:
+    if fileExists(output): raise newException(IOError, "la sortie existe déjà : " & output)
+    writeFile(output, content)
 
 proc main(): int =
   var input = ""
@@ -90,7 +153,7 @@ proc main(): int =
       case name
       of "-o", "--output": output = value(name, inline)
       of "-b", "--block":
-        try: blockIdx = parseInt(value(name, inline)) - 1
+        try: blockIdx = clamp(parseInt(value(name, inline)), 1, high(int32)) - 1
         except ValueError: raise newException(ValueError, "--block attend un entier")
       of "--check": check = true
       of "--editor": editor = true
@@ -114,12 +177,12 @@ proc main(): int =
   var text = ""
   try:
     if input.len == 0 or input == "-":
-      text = stdin.readAll()
+      text = readBounded(stdin)
     else:
-      if getFileSize(input) > MaxInput:
-        stderr.writeLine "Erreur : fichier trop volumineux (maximum : 20 MiB)"
-        return 2
-      text = readFile(input)
+      var f: File
+      if not open(f, input): raise newException(IOError, input)
+      try: text = readBounded(f)
+      finally: close(f)
   except IOError, OSError:
     stderr.writeLine "Erreur : lecture impossible : " & getCurrentExceptionMsg()
     return 2
@@ -139,17 +202,11 @@ proc main(): int =
   if check:
     return (if errors: 1 else: 0)
   if output.len > 0:
-    if fileExists(output) or dirExists(output):
+    if fileExists(output) or dirExists(output) or symlinkExists(output):
       stderr.writeLine "Erreur : la sortie existe déjà : " & output
       return 2
     try:
-      let tmp = output & ".tmp" & $getCurrentProcessId()
-      writeFile(tmp, r.svg)
-      if fileExists(output):
-        removeFile(tmp)
-        stderr.writeLine "Erreur : la sortie existe déjà : " & output
-        return 2
-      moveFile(tmp, output)
+      writeNew(output, r.svg)
     except IOError, OSError:
       stderr.writeLine "Erreur : écriture impossible : " & getCurrentExceptionMsg()
       return 2

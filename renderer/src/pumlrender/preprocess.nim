@@ -143,6 +143,24 @@ proc detectKind(lines: seq[SrcLine]): DiagramKind =
       best = if arrows > 0: dkSequence else: dkClass
   best
 
+const DirectiveWords = ["title", "header", "footer", "caption", "legend", "page", "left", "right",
+  "center", "scale", "skin", "skinparam", "set", "hide", "show", "mainframe", "style", "pragma"]
+
+proc relationNamedLikeDirective(t: string): bool =
+  ## La ligne commence par un mot de directive mais est une relation :
+  ## mot, multiplicité facultative entre guillemets, puis une flèche.
+  let sp = t.find({' ', '\t'})
+  if sp <= 0 or t[0 ..< sp].toLowerAscii() notin DirectiveWords: return false
+  var r = t[sp .. ^1].strip()
+  if r.startsWith("\""):
+    let e = r.find('"', 1)
+    if e < 0: return false
+    r = r[e + 1 .. ^1].strip()
+  let tokEnd = r.find({' ', '\t'})
+  let tok = if tokEnd < 0: r else: r[0 ..< tokEnd]
+  tok.len >= 2 and tok[0] in {'-', '.', '<', '*', 'o', '|', '}', '#', '+', 'x', '^'} and
+    (tok.contains("--") or tok.contains("->") or tok.contains("<-") or tok.contains(".."))
+
 proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultiline: bool): seq[SrcLine] =
   ## Retire titre, en-têtes, légende, skinparam et directives.
   var i = 0
@@ -162,6 +180,9 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
       result.add l
     elif t.startsWith("!"):
       ctx.warn(l.num, "directive de préprocesseur ignorée (jamais exécutée) : " & t.split({' ', '\t'})[0])
+    elif relationNamedLikeDirective(t):
+      # « Title "1" -- "*" Book », « Header -> Body » : un élément, pas une directive
+      result.add l
     elif lw == "title":
       meta.titleLine = l.num
       meta.title = collect("end title")
@@ -186,6 +207,8 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
       if t.endsWith("{"):
         inc i
         while i < lines.len and lines[i].text.strip() != "}": inc i
+        if i >= lines.len:
+          ctx.error(l.num, "bloc skinparam non fermé (« } » manquant) : la suite du diagramme est ignorée")
       ctx.info(l.num, "skinparam ignoré : le rendu natif utilise son propre style")
     elif lw.startsWithWord("hide") or lw.startsWithWord("show") or lw.startsWithWord("scale") or
         lw.startsWithWord("page") or lw.startsWithWord("allowmixing") or lw.startsWithWord("allow_mixing") or
@@ -193,6 +216,8 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
         lw.startsWithWord("skin") or lw.startsWithWord("pragma") or lw.startsWith("<style>") or lw == "style":
       if lw.startsWith("<style>"):
         while i < lines.len and not lines[i].text.contains("</style>"): inc i
+        if i >= lines.len:
+          ctx.error(l.num, "bloc <style> non fermé (« </style> » manquant) : la suite du diagramme est ignorée")
       elif not (lw.startsWithWord("hide") or lw.startsWithWord("show")):
         ctx.info(l.num, "directive graphique ignorée : " & t)
       else:

@@ -119,9 +119,9 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
         let toks = clause.splitWhitespace()
         if toks.len >= 2:
           try:
-            var n = parseInt(toks[1])
-            if toks.len >= 3 and toks[2].toLowerAscii().startsWith("week"):
-              n = if n > MaxDays: n else: n * 7
+            # borné avant toute multiplication : pas de débordement
+            var n = clamp(parseInt(toks[1]), -1, MaxDays + 1)
+            if toks.len >= 3 and toks[2].toLowerAscii().startsWith("week"): n *= 7
             tasks[idx].duration = bounded(n, l.num, "durée")
           except ValueError: ctx.warn(l.num, "durée non comprise : " & clause)
       elif cl.startsWith("starts") or cl.startsWith("happens"):

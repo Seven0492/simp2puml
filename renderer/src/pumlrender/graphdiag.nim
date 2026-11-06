@@ -57,6 +57,8 @@ const
   OtherKeywords = ["usecase/", "usecase", "actor/", "actor", "object", "map", "state", "port", "portin",
     "portout", "control", "collections", "label", "circle", "diamond", "json"]
 
+const SectionMark = "\x1F"  ## marque interne d'un séparateur titré (jamais affichée)
+
 proc shapeFor(keyword: string): Shape =
   case keyword
   of "class", "abstract", "abstract class", "interface", "enum", "annotation", "protocol",
@@ -106,6 +108,16 @@ proc defaultShape(kind: DiagramKind): Shape =
 
 proc scopeOf(g: GraphDiagram, stack: seq[int]): int =
   if stack.len > 0: stack[^1] else: -1
+
+proc isAncestorOrSelf(g: GraphDiagram, anc, idx: int): bool =
+  ## `anc` est `idx` ou l'un de ses ancêtres (parcours borné : jamais de boucle).
+  var cur = idx
+  var steps = 0
+  while cur >= 0 and steps <= g.entities.len:
+    if cur == anc: return true
+    cur = g.entities[cur].parent
+    inc steps
+  false
 
 proc addEntity(g: var GraphDiagram, id, label: string, shape: Shape, line: int, parent: int,
                keyword = ""): int =
@@ -367,6 +379,10 @@ proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int]
       inc sc.pos
     label = sc.s[st ..< sc.pos]
   id = label
+  # « class Foo<T> » : l'identité est Foo (les relations écrivent « Foo --> Bar »)
+  if keyword in ClassKeywords and label.len > 0 and label[0] != '<':
+    let lt = label.find('<')
+    if lt > 0: id = label[0 ..< lt].strip()
   sc.skipWs()
   var stereo = ""
   var color = ""
@@ -426,12 +442,19 @@ proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int]
     elif sc.acceptWord("extends") or sc.acceptWord("implements"):
       let impl = sc.s[0 ..< sc.pos].toLowerAscii().endsWith("implements")
       sc.skipWs()
-      for part in sc.rest.split({','}):
-        var p = part.strip()
-        if p.endsWith("{"):
-          p = p[0 .. ^2].strip()
-          opens = true
-        if p.len > 0: extends.add (p, impl)
+      # « extends B implements C, D » : deux listes
+      let r = sc.rest
+      var segs = @[(r, impl)]
+      let k = r.toLowerAscii().find("implements")
+      if not impl and k > 0 and r[k - 1] in Whitespace and (k + 10 >= r.len or r[k + 10] in Whitespace + {'{'}):
+        segs = @[(r[0 ..< k], false), (r[k + 10 .. ^1], true)]
+      for (seg, isImpl) in segs:
+        for part in seg.split({','}):
+          var p = part.strip()
+          if p.endsWith("{"):
+            p = p[0 .. ^2].strip()
+            opens = true
+          if p.len > 0: extends.add (p, isImpl)
       break
     else:
       # mot inconnu (ex. options de style) : ignoré
@@ -461,7 +484,8 @@ proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int]
     e.shape = shape
     e.keyword = keyword
     e.line = line
-    if e.parent == -1 and parent != -1: e.parent = parent
+    # jamais son propre parent ni l'ancêtre de son parent (« package P { package P { »)
+    if e.parent == -1 and parent != -1 and not g.isAncestorOrSelf(idx, parent): e.parent = parent
     g.lastEntity = idx
   else:
     idx = g.addEntity(id, unescapeLabel(label), shape, line, parent, keyword)
@@ -500,7 +524,7 @@ proc addMember(e: Entity, raw: string) =
   if isSep:
     e.explicitSections = true
     if e.sections.len == 0: e.sections.add @[]
-    e.sections.add (if sepText.len > 0: @["§" & sepText] else: @[])
+    e.sections.add (if sepText.len > 0: @[SectionMark & sepText] else: @[])
     return
   if e.sections.len == 0: e.sections.add @[]
   e.sections[^1].add t
@@ -734,8 +758,8 @@ proc measure(g: GraphDiagram, e: Entity) =
     for s in g.classSections(e):
       var sh = 8.0
       for m in s:
-        if m.startsWith("§"):
-          w = max(w, textWidth(m[1 .. ^1], 11) + 40)
+        if m.startsWith(SectionMark):
+          w = max(w, textWidth(m[SectionMark.len .. ^1], 11) + 40)
           sh += 16
         else:
           let (vis, txt, _, _) = memberText(m)
@@ -991,8 +1015,8 @@ proc drawEntity(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
       var sh = 8.0
       var ly = yy + 4
       for m in s:
-        if m.startsWith("§"):
-          svg.text(x + w / 2, ly + 12, m[1 .. ^1], "middle", 11, bold = true, fill = Muted)
+        if m.startsWith(SectionMark):
+          svg.text(x + w / 2, ly + 12, m[SectionMark.len .. ^1], "middle", 11, bold = true, fill = Muted)
           ly += 16
           sh += 16
           continue

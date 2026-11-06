@@ -1,7 +1,7 @@
 ## Types partagés : diagnostics, régions cliquables, métriques de texte,
 ## construction SVG et petit analyseur lexical sans expressions régulières.
 import std/[strutils, math]
-from std/unicode import Rune, runes
+from std/unicode import Rune, runes, runeAt, runeLenAt, validateUtf8
 
 type
   Severity* = enum
@@ -99,16 +99,33 @@ proc blockWidth*(lines: seq[string], size = FontSize, bold = false): float =
   for l in lines: result = max(result, textWidth(l, size, bold))
 
 proc xmlEscape*(s: string): string =
+  ## Texte sûr pour le SVG : caractères spéciaux échappés, caractères
+  ## interdits en XML retirés, UTF-8 invalide remplacé par U+FFFD.
   result = newStringOfCap(s.len)
-  for c in s:
-    case c
-    of '&': result.add "&amp;"
-    of '<': result.add "&lt;"
-    of '>': result.add "&gt;"
-    of '"': result.add "&quot;"
-    of '\'': result.add "&#39;"
-    elif ord(c) < 32 and c notin {'\t', '\n'}: discard
-    else: result.add c
+  var i = 0
+  while i < s.len:
+    let c = s[i]
+    if ord(c) < 0x80:
+      case c
+      of '&': result.add "&amp;"
+      of '<': result.add "&lt;"
+      of '>': result.add "&gt;"
+      of '"': result.add "&quot;"
+      of '\'': result.add "&#39;"
+      elif ord(c) < 32 and c notin {'\t', '\n'}: discard
+      else: result.add c
+      inc i
+      continue
+    let n1 = runeLenAt(s, i)
+    let chunk = s[i ..< min(s.len, i + n1)]
+    if n1 < 2 or chunk.len != n1 or validateUtf8(chunk) != -1:
+      result.add "\uFFFD"
+      inc i
+      continue
+    let r = runeAt(s, i).int
+    if r notin [0xFFFE, 0xFFFF] and r notin 0xD800 .. 0xDFFF:
+      result.add chunk
+    i += n1
 
 proc fmtF*(f: float): string =
   ## Nombre compact pour SVG.
