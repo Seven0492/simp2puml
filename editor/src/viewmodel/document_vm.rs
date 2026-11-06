@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime};
 
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task};
 
-use crate::model::diagram::{RenderOutput, Severity};
-use crate::model::preferences::SecurityProfile;
+use crate::model::diagram::{Hit, RenderOutput, Severity};
+use crate::model::preferences::{LinkClick, SecurityProfile};
 use crate::model::preflight::{self, NoFiles};
 use crate::model::svg_scene::Scene;
 use crate::services::include_service::DocumentFolder;
@@ -51,6 +51,26 @@ pub struct PreviewState {
     pub hovered_region: Option<usize>,
 }
 
+/// Distance au trait d'une flèche pour la toucher, en pixels à l'écran.
+const LINK_TOLERANCE: f32 = 6.0;
+const CHOICE_LABEL_CHARS: usize = 60;
+
+/// Choix proposé quand plusieurs flèches se chevauchent sous le clic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkChoice {
+    pub link: usize,
+    pub line: usize,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkMenu {
+    /// Position du clic, relative à la zone d'aperçu.
+    pub x: f32,
+    pub y: f32,
+    pub choices: Vec<LinkChoice>,
+}
+
 pub struct DocumentViewModel {
     pub editor: Entity<EditorViewModel>,
     pub path: Option<PathBuf>,
@@ -64,6 +84,10 @@ pub struct DocumentViewModel {
     pub preview: PreviewState,
     /// Ce que le diagramme a le droit de faire (préférences).
     pub security_profile: SecurityProfile,
+    pub link_click: LinkClick,
+    /// Flèches sous le pointeur, surlignées sur tout leur tracé.
+    pub hovered_links: Vec<usize>,
+    pub link_menu: Option<LinkMenu>,
     service: Option<Arc<RenderService>>,
     render_task: Option<Task<()>>,
     _editor_subscription: Subscription,
@@ -103,6 +127,9 @@ impl DocumentViewModel {
                 hovered_region: None,
             },
             security_profile: SecurityProfile::Macros,
+            link_click: LinkClick::Along,
+            hovered_links: Vec::new(),
+            link_menu: None,
             service,
             render_task: None,
             _editor_subscription: sub,
@@ -200,6 +227,8 @@ impl DocumentViewModel {
                     cx.notify();
                 });
                 self.preview.hovered_region = None;
+                self.hovered_links.clear();
+                self.link_menu = None;
                 self.rendering = Some(Rendering { output: Arc::new(output), scene: Arc::new(scene), version });
             }
             Err(e) => self.render_error = Some(e),
@@ -286,11 +315,11 @@ impl DocumentViewModel {
         cx.notify();
     }
 
-    /// Région de l'aperçu sous un point écran (relatif au coin de la zone).
-    pub fn region_at(&self, x: f32, y: f32) -> Option<usize> {
+    /// Élément de l'aperçu sous un point écran (relatif au coin de la zone).
+    fn hit_at(&self, x: f32, y: f32) -> Option<Hit> {
         let r = self.rendering.as_ref()?;
         let (sx, sy) = self.screen_to_scene(x, y);
-        r.output.region_at(sx, sy)
+        r.output.hit_at(sx, sy, LINK_TOLERANCE / self.preview.zoom, self.link_click)
     }
 
     pub fn screen_to_scene(&self, x: f32, y: f32) -> (f32, f32) {
@@ -310,19 +339,88 @@ impl DocumentViewModel {
     }
 
     pub fn hover(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        let region = self.region_at(x, y);
-        if region != self.preview.hovered_region {
+        if self.link_menu.is_some() {
+            return; // le surlignage suit alors le menu
+        }
+        let (region, links) = match self.hit_at(x, y) {
+            Some(Hit::Region(i)) => (Some(i), Vec::new()),
+            Some(Hit::Links(links)) => (None, links),
+            None => (None, Vec::new()),
+        };
+        if region != self.preview.hovered_region || links != self.hovered_links {
             self.preview.hovered_region = region;
+            self.hovered_links = links;
             cx.notify();
         }
     }
 
+    /// Clic dans l'aperçu ; vrai s'il a servi (sinon il peut commencer un glisser).
     pub fn click_preview(&mut self, x: f32, y: f32, cx: &mut Context<Self>) -> bool {
-        let Some(i) = self.region_at(x, y) else { return false };
-        let line = self.output().map(|o| o.regions[i].line).unwrap_or(0);
+        // un menu ouvert se referme au premier clic à côté, qui ne fait rien d'autre
+        if self.link_menu.take().is_some() {
+            self.hovered_links.clear();
+            cx.notify();
+            return true;
+        }
+        let Some(output) = self.output() else { return false };
+        let line = match self.hit_at(x, y) {
+            None => return false,
+            Some(Hit::Region(i)) => self.output().map(|o| o.regions[i].line).unwrap_or(0),
+            Some(Hit::Links(links)) => {
+                // une entrée par ligne de source : deux tracés d'une même ligne mènent au même endroit
+                let mut lines: Vec<(usize, usize)> = Vec::new();
+                for i in links {
+                    let line = output.links[i].line;
+                    if !lines.iter().any(|(_, l)| *l == line) {
+                        lines.push((i, line));
+                    }
+                }
+                if lines.len() > 1 {
+                    let buffer = &self.editor.read(cx).buffer;
+                    let choices = lines
+                        .into_iter()
+                        .map(|(link, line)| {
+                            let text = buffer.line_text(line.saturating_sub(1)).trim();
+                            let label: String = text.chars().take(CHOICE_LABEL_CHARS).collect();
+                            LinkChoice { link, line, label }
+                        })
+                        .collect();
+                    self.link_menu = Some(LinkMenu { x, y, choices });
+                    cx.notify();
+                    return true;
+                }
+                lines[0].1
+            }
+        };
         if line > 0 {
             cx.emit(DocumentEvent::JumpToLine(line));
         }
         true
+    }
+
+    /// Entrée du menu : aller à cette flèche.
+    pub fn choose_link(&mut self, line: usize, cx: &mut Context<Self>) {
+        self.dismiss_link_menu(cx);
+        cx.emit(DocumentEvent::JumpToLine(line));
+    }
+
+    pub fn dismiss_link_menu(&mut self, cx: &mut Context<Self>) {
+        if self.link_menu.take().is_some() {
+            self.hovered_links.clear();
+            cx.notify();
+        }
+    }
+
+    /// Survol d'une entrée du menu : surligne la flèche correspondante.
+    pub fn highlight_link(&mut self, link: Option<usize>, cx: &mut Context<Self>) {
+        self.hovered_links = link.into_iter().collect();
+        cx.notify();
+    }
+
+    pub fn set_link_click(&mut self, mode: LinkClick, cx: &mut Context<Self>) {
+        self.link_click = mode;
+        self.hovered_links.clear();
+        self.link_menu = None;
+        cx.notify();
     }
 }

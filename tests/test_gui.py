@@ -453,3 +453,33 @@ def test_preferences_of_the_new_interface_survive_a_classic_switch(config):
     preferences.set_interface(preferences.CLASSIC)
     saved = config.read_text(encoding='utf-8')
     assert 'preview_engine = official' in saved and 'security_profile = folder' in saved
+
+
+def test_official_regions_reach_members_and_elements_without_line_numbers():
+    source = '@startuml\nclass A {\n  +x : int\n  +f()\n}\nA : +z : long\n@enduml\n'
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+           '<g class="entity" data-source-line="1"><rect x="10" y="10" width="80" height="60"/>'
+           '<text x="20" y="20" font-size="10">A</text>'
+           '<g data-visibility-modifier="PUBLIC_FIELD"><text x="30" y="40" font-size="10">x\u00a0: int</text></g>'
+           '<text x="30" y="50" font-size="10">f()</text><text x="30" y="60" font-size="10">z : long</text></g>'
+           '<g class="link" data-source-line="1"><path d="M10,70 L10,90"/></g></svg>').encode()
+    found, links = preview_server.regions_and_links(svg, 1, source)
+    lines = {line for line, *_ in found}
+    assert {2, 3, 4, 6} <= lines
+    member = next(r for r in found if r[0] == 3)
+    assert member[1:] == (10.0, 30.0, 80.0, 13.0), 'toute la largeur de l\'élément'
+    assert [(line, points) for line, _, points in links] == [(2, [(10.0, 70.0), (10.0, 90.0)])], 'la flèche : son tracé'
+    # Sans aucune ligne notée (activité, Gantt…) : les textes dans l'ordre du source, même répétés.
+    plain = ('<svg xmlns="http://www.w3.org/2000/svg"><text x="1" y="9" font-size="9" textLength="9">rien</text>'
+             '<text x="1" y="9" font-size="9">Lire</text><text x="1" y="9" font-size="9">Fin</text></svg>').encode()
+    assert [r[0] for r in preview_server.regions_and_links(plain, 1, '@startuml\n:Lire;\n:Fin;\n@enduml\n')[0]] == [2, 3]
+    assert preview_server.regions_and_links(b'pas du xml', 1, '') == ([], [])
+
+
+def test_official_arrow_curves_are_flattened():
+    points = preview_server._flatten('M0,0 L10,0 C10,10 20,10 20,0 H30 V5')
+    assert points[:2] == [(0.0, 0.0), (10.0, 0.0)]
+    assert points[-2:] == [(30.0, 0.0), (30.0, 5.0)]
+    assert len(points) == 2 + 12 + 2, 'une courbe : douze segments'
+    assert max(y for _, y in points[2:14]) > 5, 'la courbe passe par son milieu, pas par une corde'
+    assert preview_server._flatten('Z') == []

@@ -329,6 +329,7 @@ proc renderTiming*(doc: Doc, ctx: Context): (Svg, float, float) =
     let angle = arctan2(yb - ya, xb - xa)
     svg.line(xa, ya, xb, yb, arrowStroke(), 1.1)
     svg.arrowHead(xb, yb, angle, "filled", arrowStroke())
+    ctx.link(k.line, [(xa, ya), (xb, yb)])
     if k.constraint: svg.arrowHead(xa, ya, angle + PI, "filled", arrowStroke())
     if k.text.len > 0:
       svg.text((xa + xb) / 2 + 4, (ya + yb) / 2 - 4, k.text, size = 11)

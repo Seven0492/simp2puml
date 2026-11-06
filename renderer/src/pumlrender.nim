@@ -42,6 +42,12 @@ proc editorOutput(r: RenderResult, id = ""): string =
     result.add "DIAG\t" & $d.line & "\t" & $d.severity & "\t" & clean(d.message) & "\n"
   for g in r.regions:
     result.add "REGION\t" & $g.line & "\t" & fmtF(g.x) & "\t" & fmtF(g.y) & "\t" & fmtF(g.w) & "\t" & fmtF(g.h) & "\n"
+  for l in r.links:
+    result.add "LINK\t" & $l.line & "\t" & $l.after & "\t"
+    for i, p in l.points:
+      if i > 0: result.add ' '
+      result.add fmtF(p[0]) & " " & fmtF(p[1])
+    result.add "\n"
   result.add "SVG\t" & $r.svg.len & "\n"
   result.add r.svg
 

@@ -342,6 +342,143 @@ suite "types ajoutés":
     check baseline("un") == baseline("deux")
     check baseline("trois") != baseline("un")
 
+suite "clics précis":
+  proc at(r: RenderResult, x, y: float): int =
+    ## Ligne de la plus petite région sous le point, comme l'éditeur.
+    var best = Inf
+    for g in r.regions:
+      if x >= g.x and x <= g.x + g.w and y >= g.y and y <= g.y + g.h and g.w * g.h < best:
+        best = g.w * g.h
+        result = g.line
+
+  proc smallest(r: RenderResult, line: int): Region =
+    ## Une zone de cette ligne, la plus petite.
+    var area = Inf
+    for g in r.regions:
+      if g.line == line and g.w * g.h < area:
+        area = g.w * g.h
+        result = g
+
+  proc hit(r: RenderResult, line: int): int =
+    let g = r.smallest(line)
+    r.at(g.x + g.w / 2, g.y + g.h / 2)
+
+  test "chaque membre d'une classe renvoie à sa ligne":
+    let r = renderPuml("""@startuml
+class A {
+  +x : int
+  -y : String
+  --
+  +f() : void
+  .. titre ..
+  +g()
+}
+A : +z : int
+enum E {
+  UN
+  DEUX
+}
+@enduml
+""")
+    check r.errors.len == 0
+    for line in [3, 4, 6, 7, 8, 10, 12, 13]: check r.hit(line) == line
+    # l'en-tête reste la déclaration
+    check r.smallest(2).h > 20
+
+  test "le même texte deux fois garde ses deux lignes":
+    let r = renderPuml("@startuml\nclass A {\n  x\n  x\n}\n@enduml\n")
+    check r.hit(3) == 3
+    check r.hit(4) == 4
+
+  test "un objet, une carte et un état":
+    let o = renderPuml("@startuml\nobject O {\n  a = 1\n  b = 2\n}\nmap M {\n  k => v\n}\n@enduml\n")
+    for line in [3, 4, 7]: check o.hit(line) == line
+    let s = renderPuml("@startuml\nstate S\nS : première\nS : seconde\n@enduml\n")
+    for line in [3, 4]: check s.hit(line) == line
+
+  test "une relation donne son tracé, pas des zones carrées":
+    let r = renderPuml("@startuml\nclass A\nclass B\nA \"1\" --> \"*\" B : lien\n@enduml\n")
+    check r.links.len == 1
+    check r.links[0].line == 4
+    check r.links[0].points.len >= 2
+    check r.regions.countIt(it.line == 4 and it.w == 10 and it.h == 10) == 0
+    # du bord d'une boîte à l'autre : vertical, entre les deux classes
+    let (p0, p1) = (r.links[0].points[0], r.links[0].points[^1])
+    check p1[1] - p0[1] > 30
+    # le libellé et les multiplicités restent cliquables
+    check r.hit(4) == 4
+
+  test "le tracé suit le décalage de l'habillage":
+    let plain = renderPuml("@startuml\nA --|> B\n@enduml\n")
+    let titled = renderPuml("@startuml\ntitle Un titre\nA --|> B\n@enduml\n")
+    check titled.links[0].points[0][1] > plain.links[0].points[0][1]
+
+  test "un libellé qui décale tout le diagramme décale aussi le tracé":
+    let r = renderPuml("@startuml\nstate A\nstate B\nA --> B : un libellé plutôt long à droite\nB --> A : un autre libellé long à gauche\n@enduml\n")
+    check r.links.len == 2
+    for l in r.links:
+      for p in l.points: check p[0] >= 0 and p[0] <= r.width
+
+  test "autres flèches : séquence, boucle sur soi, chronogramme, activité, données, carte":
+    check renderPuml("@startuml\nA -> B : m\nA -> A : soi\n@enduml\n").links.len == 2
+    check renderPuml("@startuml\nclass A\nA --> A\n@enduml\n").links.len == 1
+    check renderPuml("@startuml\nrobust a\nrobust b\n@0\na is X\nb is Y\na -> b : m\n@enduml\n").links.len == 1
+    check renderPuml("@startuml\nstart\n:a;\n:b;\nstop\n@enduml\n").links.len == 3
+    check renderPuml("@startjson\n{\"a\": {\"b\": 1}}\n@endjson\n").links.len == 1
+    check renderPuml("@startmindmap\n* r\n** a\n** b\n@endmindmap\n").links.len == 2
+    check renderPuml("@startwbs\n* r\n** a\n@endwbs\n").links.len == 1
+
+  test "les éléments dessinés après la flèche passent au-dessus":
+    let r = renderPuml("@startuml\nclass A\nclass B\nA --> B\n@enduml\n")
+    check r.links[0].after < r.regions.len
+    check r.regions[r.links[0].after ..< r.regions.len].anyIt(it.h > 20)
+
+  test "beaucoup de relations : un tracé par relation, sans zones en plus":
+    var src = "@startuml\n"
+    for i in 0 .. 400: src.add "A" & $i & " --> A" & $(i + 1) & "\n"
+    let r = renderPuml(src & "@enduml\n")
+    check r.links.len == 401
+    check r.regions.len < 1000
+
+  test "séquence : activation, else et note":
+    let r = renderPuml("""@startuml
+A -> B
+activate B
+alt oui
+A -> B : m
+else non
+B -> A : r
+end
+note over A : n
+deactivate B
+@enduml
+""")
+    for line in [2, 3, 4, 5, 6, 7, 9]: check r.hit(line) == line
+
+  test "activité : branches, note, flèche et bas de boucle":
+    let r = renderPuml("""@startuml
+start
+if (c ?) then (oui)
+  :a;
+  -> étiquette;
+  :b;
+  note right : n
+else (non)
+  :d;
+endif
+repeat
+  :e;
+repeat while (encore ?) is (oui)
+stop
+@enduml
+""")
+    check r.errors.len == 0
+    for line in [3, 4, 5, 6, 7, 8, 9, 12, 13]: check r.hit(line) == line
+
+  test "titre, en-tête, légende de figure et pied de page":
+    let r = renderPuml("@startuml\nheader H\nfooter F\ncaption C\nclass A\n@enduml\n")
+    for line in [2, 3, 4]: check r.hit(line) == line
+
 suite "imbrication extrême : diagnostic, jamais d'arrêt du processus":
   proc rep(s: string, n: int): string =
     for _ in 1 .. n: result.add s

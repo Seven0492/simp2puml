@@ -50,6 +50,9 @@ impl Prepared {
         for r in &mut output.regions {
             r.line = map(r.line);
         }
+        for l in &mut output.links {
+            l.line = map(l.line);
+        }
         let mut all = self.diagnostics.clone();
         all.append(&mut output.diagnostics);
         output.diagnostics = all;

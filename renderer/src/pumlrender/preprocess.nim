@@ -199,14 +199,19 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
       meta.titleLine = l.num
       meta.title = unescapeLabel(t.afterWord("title"))
     elif lw in ["header", "left header", "right header", "center header"]:
+      meta.headerLine = l.num
       meta.header = collect("end header")
     elif lw.startsWithWord("header") or lw.startsWith("left header ") or lw.startsWith("right header ") or lw.startsWith("center header "):
+      meta.headerLine = l.num
       meta.header = unescapeLabel(t[t.toLowerAscii().find("header") + 6 .. ^1].strip())
     elif lw in ["footer", "left footer", "right footer", "center footer"]:
+      meta.footerLine = l.num
       meta.footer = collect("end footer")
     elif lw.startsWithWord("footer") or lw.startsWith("left footer ") or lw.startsWith("right footer ") or lw.startsWith("center footer "):
+      meta.footerLine = l.num
       meta.footer = unescapeLabel(t[t.toLowerAscii().find("footer") + 6 .. ^1].strip())
     elif lw.startsWithWord("caption"):
+      meta.captionLine = l.num
       meta.caption = unescapeLabel(t.afterWord("caption"))
     elif lw.startsWithWord("legend"):
       meta.legendLine = l.num

@@ -26,10 +26,15 @@ proc compose*(ctx: Context, meta: Meta, inner: Svg, w, h: float, regionStart = 0
   for i in regionStart ..< ctx.regions.len:
     ctx.regions[i].x += offX
     ctx.regions[i].y += innerTop
+  for l in ctx.links.mitems:
+    for p in l.points.mitems:
+      p = (p[0] + offX, p[1] + innerTop)
   var svg: Svg
   svg.defs = inner.defs
   if headerLines.len > 0:
     svg.textBlock(W - pad, 4, headerLines, "end", 11, fill = Muted)
+    let headerW = blockWidth(headerLines, 11)
+    ctx.region(meta.headerLine, W - pad - headerW, 2, headerW, headerH)
   if titleLines.len > 0:
     svg.textBlock(W / 2, headerH + 6, titleLines, "middle", 17, bold = true)
     ctx.region(meta.titleLine, W / 2 - blockWidth(titleLines, 17, true) / 2, headerH + 6,
@@ -50,9 +55,13 @@ proc compose*(ctx: Context, meta: Meta, inner: Svg, w, h: float, regionStart = 0
     y += legendH + 4
   if captionLines.len > 0:
     svg.textBlock(W / 2, y + 4, captionLines, "middle", 12, italic = true, fill = Muted)
+    let captionW = blockWidth(captionLines, 12)
+    ctx.region(meta.captionLine, W / 2 - captionW / 2, y + 2, captionW, captionH)
     y += captionH
   if footerLines.len > 0:
     svg.textBlock(W / 2, y + 2, footerLines, "middle", 11, fill = Muted)
+    let footerW = blockWidth(footerLines, 11)
+    ctx.region(meta.footerLine, W / 2 - footerW / 2, y, footerW, footerH)
     y += footerH
   svg.finish(W, max(y, 20.0))
 

@@ -8,16 +8,17 @@
 //!   (moins coûteux que des chemins tessellés).
 
 use gpui::{
-    App, Bounds, ContentMask, Context, Corners, Edges, ElementId, Entity, FocusHandle, Focusable,
-    FontStyle, FontWeight, GlobalElementId, Hsla, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, ScrollWheelEvent, SharedString,
-    Style, Subscription, TextRun, UnderlineStyle, Window, div, fill, font, point, prelude::*, px,
-    quad, relative, size,
+    AnyElement, App, Bounds, ContentMask, Context, Corners, Edges, ElementId, Entity, FocusHandle,
+    Focusable, FontStyle, FontWeight, GlobalElementId, Hsla, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, ScrollWheelEvent,
+    SharedString, Style, Subscription, TextRun, UnderlineStyle, Window, anchored, deferred, div,
+    fill, font, point, prelude::*, px, quad, relative, size,
 };
 
+use super::components::{button, hint};
 use super::theme;
 use crate::model::svg_scene::{Anchor, Color, Geometry, Item, PathCmd, Scene, Style as Paint, Text};
-use crate::viewmodel::document_vm::DocumentViewModel;
+use crate::viewmodel::document_vm::{DocumentViewModel, LinkMenu};
 
 pub struct PreviewView {
     document: Entity<DocumentViewModel>,
@@ -87,6 +88,51 @@ impl PreviewView {
     }
 }
 
+impl PreviewView {
+    fn on_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if ev.keystroke.key == "escape" {
+            self.document.update(cx, |d, cx| d.dismiss_link_menu(cx));
+        }
+    }
+
+    /// Plusieurs flèches sous le clic : l'utilisateur confirme laquelle il visait.
+    fn link_menu(&self, menu: &LinkMenu) -> AnyElement {
+        let origin = self.bounds.map(|b| b.origin).unwrap_or_default();
+        let position = point(origin.x + px(menu.x), origin.y + px(menu.y));
+        let rows = menu.choices.iter().map(|choice| {
+            let (link, line) = (choice.link, choice.line);
+            let (over, click) = (self.document.clone(), self.document.clone());
+            button(format!("link-choice-{line}"), format!("ligne {line}  {}", choice.label))
+                .on_hover(move |hovered, _, cx: &mut App| {
+                    over.update(cx, |d, cx| d.highlight_link(hovered.then_some(link), cx));
+                })
+                .on_click(move |_, _, cx: &mut App| {
+                    click.update(cx, |d, cx| d.choose_link(line, cx));
+                })
+        });
+        deferred(
+            anchored().position(position).snap_to_window_with_margin(px(8.)).child(
+                div()
+                    .id("link-menu")
+                    .occlude()
+                    .min_w(px(220.))
+                    .max_w(px(560.))
+                    .p_1()
+                    .bg(theme::surface())
+                    .border_1()
+                    .border_color(theme::field_border())
+                    .rounded_md()
+                    .shadow_lg()
+                    .font_family(theme::UI_FONT)
+                    .child(div().px_2().py_1().child(hint("Plusieurs flèches ici :")))
+                    .children(rows),
+            ),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
+}
+
 impl Render for PreviewView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let doc = self.document.read(cx);
@@ -102,8 +148,10 @@ impl Render for PreviewView {
         };
         // un rendu précédent reste affiché, mais l'échec du rendu courant est signalé
         let stale_error = doc.rendering.is_some().then(|| doc.render_error.clone()).flatten();
-        let hovering = doc.preview.hovered_region.is_some();
+        let hovering = doc.preview.hovered_region.is_some() || !doc.hovered_links.is_empty();
+        let menu = doc.link_menu.clone();
         let root = div()
+            .debug_selector(|| "preview".to_string())
             .id("preview")
             .track_focus(&self.focus_handle)
             .flex_1()
@@ -122,6 +170,7 @@ impl Render for PreviewView {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_key_down(cx.listener(Self::on_key_down))
             .relative()
             .child(SceneElement { view: cx.entity() })
             .when_some(stale_error, |s, e| {
@@ -139,6 +188,7 @@ impl Render for PreviewView {
                         .child(format!("Rendu impossible (aperçu précédent affiché) : {e}")),
                 )
             })
+            .children(menu.map(|m| self.link_menu(&m)))
             .into_any_element()
     }
 }
@@ -210,6 +260,7 @@ impl Element for SceneElement {
         let scene = rendering.scene.clone();
         let output = rendering.output.clone();
         let p = doc.preview;
+        let hovered_links = doc.hovered_links.clone();
         let (ox, oy) = doc.scene_origin();
         let t = Transform {
             origin: point(bounds.left() + px(ox - p.scroll_x), bounds.top() + px(oy - p.scroll_y)),
@@ -233,6 +284,17 @@ impl Element for SceneElement {
                 window.paint_quad(
                     quad(b, Corners::all(px(3.)), theme::region_hover(), Edges::all(px(1.)), theme::accent(), Default::default()),
                 );
+            }
+            // la flèche entière est surlignée, même si seul un bout réagit au clic
+            for link in hovered_links.iter().filter_map(|i| output.links.get(*i)) {
+                let mut builder = PathBuilder::stroke(px(3.0));
+                for (k, (x, y)) in link.points.iter().enumerate() {
+                    if k == 0 { builder.move_to(t.point(*x, *y)) } else { builder.line_to(t.point(*x, *y)) }
+                }
+                if let Ok(path) = builder.build() {
+                    let color: Hsla = theme::accent().into();
+                    window.paint_path(path, color);
+                }
             }
         });
     }

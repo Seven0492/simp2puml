@@ -20,6 +20,8 @@ type
     stereo*: string
     color*: string
     sections*: seq[seq[string]]
+    ## Lignes du source de chaque membre, dans l'ordre (un même texte peut revenir).
+    memberLines*: Table[string, seq[int]]
     explicitSections*: bool
     line*: int
     parent*: int
@@ -105,6 +107,9 @@ proc defaultShape(kind: DiagramKind): Shape =
   of dkObject: shObject
   of dkActivity: shActivity
   else: shClass
+
+proc noteLine(e: Entity, member: string, line: int) =
+  e.memberLines.mgetOrPut(member, @[]).add line
 
 proc scopeOf(g: GraphDiagram, stack: seq[int]): int =
   if stack.len > 0: stack[^1] else: -1
@@ -501,10 +506,14 @@ proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int]
     if isClassBody:
       if e.sections.len == 0: e.sections.add @[]
       for part in desc.split(';'):
-        if part.strip().len > 0: e.sections[^1].add part.strip()
+        if part.strip().len > 0:
+          e.sections[^1].add part.strip()
+          e.noteLine(part.strip(), line)
     else:
       if e.sections.len == 0: e.sections.add @[]
-      e.sections[0].add splitLabel(desc)
+      for part in splitLabel(desc):
+        e.sections[0].add part
+        e.noteLine(part, line)
   for (p, impl) in extends:
     let pi = g.ensure(p, p, (if impl: shClass else: shClass), line, parent)
     if impl and g.entities[pi].keyword == "": g.entities[pi].keyword = "interface"
@@ -518,7 +527,7 @@ proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int]
       scope.add idx
   true
 
-proc addMember(e: Entity, raw: string) =
+proc addMember(e: Entity, raw: string, line: int) =
   let t = raw.strip()
   if t.len == 0: return
   var sepText = ""
@@ -531,9 +540,11 @@ proc addMember(e: Entity, raw: string) =
     e.explicitSections = true
     if e.sections.len == 0: e.sections.add @[]
     e.sections.add (if sepText.len > 0: @[SectionMark & sepText] else: @[])
+    if sepText.len > 0: e.noteLine(SectionMark & sepText, line)
     return
   if e.sections.len == 0: e.sections.add @[]
   e.sections[^1].add t
+  e.noteLine(t, line)
 
 proc parseGraph*(doc: Doc, ctx: Context): GraphDiagram =
   var g = GraphDiagram(kind: doc.kind, leftToRight: doc.meta.leftToRight, lastEntity: -1)
@@ -550,7 +561,7 @@ proc parseGraph*(doc: Doc, ctx: Context): GraphDiagram =
       if t == "}" or t.startsWith("}"):
         bodyOf = -1
       else:
-        g.entities[bodyOf].addMember(t)
+        g.entities[bodyOf].addMember(t, l.num)
       continue
     let lw = t.toLowerAscii()
     if t == "}" or lw == "end package" or lw == "end state" or lw == "end node":
@@ -662,10 +673,12 @@ proc parseGraph*(doc: Doc, ctx: Context): GraphDiagram =
         let member = t[t.find(':', colon2) + 1 .. ^1].strip()
         let e = g.entities[idx]
         if e.shape in {shClass, shObject, shMap}:
-          e.addMember(member)
+          e.addMember(member, l.num)
         else:
           if e.sections.len == 0: e.sections.add @[]
-          e.sections[0].add splitLabel(member)
+          for part in splitLabel(member):
+            e.sections[0].add part
+            e.noteLine(part, l.num)
         continue
     block shorthand:
       var sc = initScanner(t)
@@ -1033,6 +1046,13 @@ proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
   let (x, y, w, h) = (e.x, e.y, e.w, e.h)
   let st = g.stereoText(e)
   ctx.region(e.line, x, y, w, h)
+  # chaque membre renvoie à sa ligne : le plus petit élément sous le pointeur l'emporte
+  var memberSeen = initCountTable[string]()
+  proc memberRegion(member: string, rx, ry, rw, rh: float) =
+    let lines = e.memberLines.getOrDefault(member)
+    let index = memberSeen[member]
+    memberSeen.inc(member)
+    if lines.len > 0: ctx.region(lines[min(index, lines.high)], rx, ry, rw, rh)
   proc header(svg: var Svg, top: float, bold = true, italic = false, underline = false, center = -1.0) =
     let c = if center >= 0: center else: x + w / 2
     var yy = top
@@ -1072,6 +1092,7 @@ proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
       for m in s:
         if m.startsWith(SectionMark):
           svg.text(x + w / 2, ly + 12, m[SectionMark.len .. ^1], "middle", 11, bold = true, fill = Muted)
+          memberRegion(m, x + 1, ly, w - 2, 16)
           ly += 16
           sh += 16
           continue
@@ -1086,6 +1107,7 @@ proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
           svg.text(tx + textWidth(parts[0].strip(), FontSize, true) + 10, ly + 12, parts[1].strip())
         else:
           svg.text(tx, ly + 12, txt, italic = isAbs, underline = isStatic)
+        memberRegion(m, x + 1, ly, w - 2, LineHeight)
         ly += LineHeight
         sh += LineHeight
       yy += max(sh, 10.0)
@@ -1152,6 +1174,8 @@ proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
       header(svg, y + 6)
       if e.sections.len > 0 and e.sections[0].len > 0:
         svg.textBlock(x + 10, y + 6 + g.headerSize(e)[1] + 4, e.sections[0], size = 12)
+        for i, part in e.sections[0]:
+          memberRegion(part, x + 1, y + 10 + g.headerSize(e)[1] + blockHeight(i, 12), w - 2, blockHeight(1, 12))
       svg.line(x, y + th, x + w, y + th)
     else:
       svg.rect(x, y, w, h, fill, Stroke, 12)
@@ -1162,6 +1186,8 @@ proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
         let sy = y + hh + 12
         svg.line(x, sy, x + w, sy)
         svg.textBlock(x + 10, sy + 5, e.sections[0])
+        for i, part in e.sections[0]:
+          memberRegion(part, x + 1, sy + 5 + blockHeight(i), w - 2, blockHeight(1))
       else:
         header(svg, y + (h - hh) / 2)
   of shActivity:
@@ -1269,7 +1295,10 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     if r.label.len > 0:
       let lines = r.label.split('\n')
       labels.textBlock(x0 + 34, y0 + (y1 - y0) / 2 - blockHeight(lines.len) / 2, lines, size = 12)
-    ctx.region(r.line, x0, y0 - 10, 44, y1 - y0 + 20)
+    ctx.linkCubic(r.line, (x0, y0), (x0 + 40, y0 - 10), (x0 + 40, y1 + 10), (x0, y1))
+    if r.label.len > 0:
+      let lines = r.label.split('\n')
+      ctx.region(r.line, x0 + 34, y0 + (y1 - y0) / 2 - blockHeight(lines.len) / 2, blockWidth(lines, 12), blockHeight(lines.len))
     return
   var ca = ea.center
   var cb = eb.center
@@ -1300,6 +1329,7 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
   for k in 1 .. pts.high:
     d.add " L" & fmtF(pts[k][0]) & " " & fmtF(pts[k][1])
   svg.path(d, "none", color, sw, dash)
+  ctx.link(r.line, pts)
   if r.leftHead.len > 0:
     let ang = arctan2(pts[0][1] - pts[1][1], pts[0][0] - pts[1][0])
     svg.arrowHead(pts[0][0], pts[0][1], ang, r.leftHead, color)
@@ -1325,8 +1355,6 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     labels.rect(lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2, Background, "none", 0, 0, "", "fill-opacity=\"0.85\"")
     labels.textBlock(lx, my - lh / 2, lines, "middle", 12)
     ctx.region(r.line, lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2)
-  else:
-    ctx.region(r.line, mx - 6, my - 6, 12, 12)
   proc endLabel(svg: var Svg, p, q: (float, float), s: string) =
     if s.len == 0: return
     let dx = q[0] - p[0]
@@ -1337,6 +1365,8 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     let px = p[0] + ux * 16 - uy * 12
     let py = p[1] + uy * 16 + ux * 12
     svg.text(px, py + 4, s, "middle", 11, fill = Muted)
+    let tw = textWidth(s, 11) + 4
+    ctx.region(r.line, px - tw / 2, py - 8, tw, 15)
   labels.endLabel(pts[0], pts[1], r.multA)
   labels.endLabel(pts[^1], pts[^2], r.multB)
 
@@ -1462,6 +1492,7 @@ proc renderGraph*(g: var GraphDiagram, ctx: Context): (Svg, float, float) =
       g.rels[ri].points[k] = (g.rels[ri].points[k][0] + o[0], g.rels[ri].points[k][1] + o[1])
   g.avoidObstacles()
   let regionStart = ctx.regions.len
+  let linkStart = ctx.links.len
   var svg = g.paintAll(ctx)
   # un libellé d'arête placé à côté de son trait peut sortir à gauche ou en haut :
   # tout décaler plutôt que de le laisser coupé par le cadre de l'image
@@ -1479,6 +1510,7 @@ proc renderGraph*(g: var GraphDiagram, ctx: Context): (Svg, float, float) =
       for k in 0 ..< g.rels[ri].points.len:
         g.rels[ri].points[k] = (g.rels[ri].points[k][0] + shiftX, g.rels[ri].points[k][1] + shiftY)
     ctx.regions.setLen(regionStart)
+    ctx.links.setLen(linkStart)
     svg = g.paintAll(ctx)
   var maxX = w + 2 * margin
   var maxY = h + 2 * margin

@@ -480,13 +480,13 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
   var bg, mid, fg: Svg
   var y = headH + 16.0
   let top0 = 6.0
-  var active = newSeq[seq[(float, string)]](n)   # piles (début, couleur)
-  var bars: seq[(int, float, float, int, string)] # participant, y0, y1, niveau, couleur
+  var active = newSeq[seq[(float, string, int)]](n)   # piles (début, couleur, ligne)
+  var bars: seq[(int, float, float, int, string, int)] # participant, y0, y1, niveau, couleur, ligne
   type Grp = object
     kind, label, color: string
     y0: float
     lo, hi: int
-    elses: seq[(float, string)]
+    elses: seq[(float, string, int)]
     line: int
     xmin, xmax: float   ## étendue des auto-messages et notes qui dépassent des colonnes
   var groups: seq[Grp]
@@ -614,8 +614,8 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
           a = callee
           b = caller
           if a >= 0 and active[a].len > 0:
-            let (y0, col) = active[a].pop()
-            bars.add (a, y0, y + 8, active[a].len, col)
+            let (y0, col, barLine) = active[a].pop()
+            bars.add (a, y0, y + 8, active[a].len, col, barLine)
         else:
           ctx.warn(ev.line, "return sans appel actif")
           continue
@@ -634,7 +634,8 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         fg.path("M" & fmtF(x0) & " " & fmtF(y0) & " H" & fmtF(x0 + 36) & " V" & fmtF(y1) & " H" & fmtF(x0 + 2),
           "none", color, 1.2, dash)
         fg.drawHead(x0 + 2, y1, PI, ev.head, color)
-        ctx.region(ev.line, x0, ty, max(tw, 36) + 10, y1 - ty + 4)
+        ctx.link(ev.line, [(x0, y0), (x0 + 36, y0), (x0 + 36, y1), (x0 + 2, y1)])
+        if tw > 0: ctx.region(ev.line, x0, ty, tw + 10, lh + 4)
         extent(x0, x0 + 8 + max(tw, 36))
         y = y1 + 14
       else:
@@ -654,28 +655,31 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         if ev.tail.len > 0:
           fg.drawHead(x0, ly, (if dir > 0: PI else: 0.0), ev.tail, color)
         discard tx
-        ctx.region(ev.line, min(x0, x1), y, abs(x1 - x0), ly - y + 6)
+        ctx.link(ev.line, [(x0, ly), (x1, ly)])
+        # le libellé seul : la flèche se clique sur son tracé
+        let labelW = blockWidth(lines, 12)
+        if labelW > 0: ctx.region(ev.line, min(x0, x1) + 6, y, labelW + 4, lh + 2)
         y = ly + 14
         if b >= 0 and ev.activateTarget:
-          active[b].add (ly, "")
+          active[b].add (ly, "", ev.line)
           if a >= 0: callStack.add (a, b)
         if a >= 0 and ev.deactivateSource and active[a].len > 0:
-          let (y0, col) = active[a].pop()
-          bars.add (a, y0, ly, active[a].len, col)
+          let (y0, col, barLine) = active[a].pop()
+          bars.add (a, y0, ly, active[a].len, col, barLine)
         if b >= 0 and ev.destroyTarget:
           destroyedY[b] = ly
           fg.arrowHead(cx[b] + 7, ly + 7, PI / 4, "cross", Ink)
     of evActivate:
       let p = ev.a
-      active[p].add (y - 10, ev.color)
+      active[p].add (y - 10, ev.color, ev.line)
       touch(p)
       # l'appelant est l'émetteur du dernier message reçu par p
       callStack.add (lastFrom(p), p)
     of evDeactivate:
       let p = ev.a
       if active[p].len > 0:
-        let (y0, col) = active[p].pop()
-        bars.add (p, y0, y - 10, active[p].len, col)
+        let (y0, col, barLine) = active[p].pop()
+        bars.add (p, y0, y - 10, active[p].len, col, barLine)
         for k in countdown(callStack.high, 0):
           if callStack[k][1] == p:
             callStack.delete(k)
@@ -684,8 +688,8 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     of evDestroy:
       let p = ev.a
       while active[p].len > 0:
-        let (y0, col) = active[p].pop()
-        bars.add (p, y0, y - 6, active[p].len, col)
+        let (y0, col, barLine) = active[p].pop()
+        bars.add (p, y0, y - 6, active[p].len, col, barLine)
       destroyedY[p] = y - 6
       fg.arrowHead(cx[p] + 7, y + 1, PI / 4, "cross", Ink)
       y += 12
@@ -758,7 +762,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
       if groups.len == 0:
         ctx.warn(ev.line, "else hors d'un fragment")
       else:
-        groups[^1].elses.add (y, ev.text)
+        groups[^1].elses.add (y, ev.text, ev.line)
         y += 20
     of evGroupEnd:
       if groups.len == 0:
@@ -785,10 +789,11 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
       mid.text(gx0 + 6, g.y0 + 13, kw, size = 12, bold = true)
       if g.label.len > 0:
         mid.text(gx0 + kwW + 14, g.y0 + 13, "[" & g.label & "]", size = 12, bold = true)
-      for (ey, et) in g.elses:
+      for (ey, et, elseLine) in g.elses:
         mid.line(gx0, ey, gx1, ey, Stroke, 1.1, "5 4")
+        ctx.region(elseLine, gx0, ey, max(textWidth("[" & et & "]", 12, true) + 16, 40), 18)
         if et.len > 0: mid.text(gx0 + 8, ey + 13, "[" & et & "]", size = 12, bold = true)
-      ctx.region(g.line, gx0, g.y0, kwW + 8, 18)
+      ctx.region(g.line, gx0, g.y0, kwW + 14 + (if g.label.len > 0: textWidth("[" & g.label & "]", 12, true) else: 0.0), 18)
       touch(lo, hi)
       y += 14
   y = max(y, msgBottom)
@@ -797,8 +802,8 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
   # activations restantes
   for p in 0 ..< n:
     while active[p].len > 0:
-      let (y0, col) = active[p].pop()
-      bars.add (p, y0, y, active[p].len, col)
+      let (y0, col, barLine) = active[p].pop()
+      bars.add (p, y0, y, active[p].len, col, barLine)
   let bottom = y + 6
   # lignes de vie
   for k in 0 ..< n:
@@ -806,8 +811,9 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     let endY = if destroyedY[k] >= 0: destroyedY[k] else: bottom
     let lifeline = Elements.getOrDefault("sequencelifeline").border
     bg.line(cx[k], startY, cx[k], endY, (if lifeline.len > 0: lifeline else: Muted), 1, "5 5")
-  for (p, y0, y1, lvl, col) in bars:
+  for (p, y0, y1, lvl, col, barLine) in bars:
     bg.rect(cx[p] - 5 + float(lvl) * 5, y0, 10, max(4.0, y1 - y0), (if col.len > 0: col else: Background), Stroke, 0, 1.1)
+    ctx.region(barLine, cx[p] - 5 + float(lvl) * 5, y0, 10, max(4.0, y1 - y0))
   # boîtes de participants
   var boxSvg: Svg
   for bi, b in boxes:

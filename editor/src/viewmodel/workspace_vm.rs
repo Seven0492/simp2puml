@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription, WeakEntity};
 
-use crate::model::preferences::{InterfaceChoice, MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, LinkClick, MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::model::templates::{self, TEMPLATES};
 use crate::services::{file_service, interface_service, preferences_service};
 use crate::services::render_service::{self, RenderService};
@@ -198,10 +198,11 @@ impl WorkspaceViewModel {
 
     fn add_document(&mut self, path: Option<PathBuf>, title: String, text: &str, cx: &mut Context<Self>) {
         let service = self.service.clone();
-        let profile = self.preferences.security_profile;
+        let (profile, link_click) = (self.preferences.security_profile, self.preferences.link_click);
         let doc = cx.new(|cx| {
             let mut doc = DocumentViewModel::new(text, path, title, service, cx);
             doc.security_profile = profile;
+            doc.link_click = link_click;
             doc
         });
         let (autocomplete, code_size) = (self.preferences.autocomplete, self.preferences.code_size);
@@ -703,6 +704,13 @@ impl WorkspaceViewModel {
         self.update_preferences(|p| p.preview_engine = engine, cx);
         self.service = make_service(engine);
         self.reconfigure_documents(cx);
+    }
+
+    pub fn set_link_click(&mut self, mode: LinkClick, cx: &mut Context<Self>) {
+        self.update_preferences(|p| p.link_click = mode, cx);
+        for doc in self.documents.clone() {
+            doc.update(cx, |d, cx| d.set_link_click(mode, cx));
+        }
     }
 
     pub fn set_security_profile(&mut self, profile: SecurityProfile, cx: &mut Context<Self>) {

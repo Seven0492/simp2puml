@@ -12,8 +12,11 @@ type
     line: int
     color: string
     children: seq[ANode]           ## akSeq
-    notes: seq[(int, string, string)] ## (index de l'enfant, côté, texte) pour akSeq
+    notes: seq[(int, string, string, int)] ## (index de l'enfant, côté, texte, ligne) pour akSeq
     labels: seq[string]            ## étiquette sur la flèche après l'enfant i
+    labelLines: seq[int]
+    branchLines: seq[int]          ## ligne de chaque branche (else, elseif, case…)
+    endLine: int                   ## ligne qui ferme : repeat while, endwhile
     branches: seq[ANode]           ## akIf / akFork : séquences
     branchLabels: seq[string]
     body: ANode                    ## akWhile / akRepeat / akPartition
@@ -51,6 +54,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
   proc add(n: ANode) =
     cur.children.add n
     cur.labels.add ""
+    cur.labelLines.add 0
   let lines = doc.lines
   var i = 0
   while i < lines.len:
@@ -95,7 +99,9 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let a = lbl.find('>')
       lbl = if a >= 0: lbl[a + 1 .. ^1].strip() else: ""
       if lbl.endsWith(";"): lbl.setLen(lbl.len - 1)
-      if cur.labels.len > 0: cur.labels[^1] = unescapeLabel(lbl.strip())
+      if cur.labels.len > 0:
+        cur.labels[^1] = unescapeLabel(lbl.strip())
+        cur.labelLines[^1] = l.num
       continue
     if lw.startsWith("if") and (lw.startsWith("if (") or lw.startsWith("if(")):
       let (cond, rest) = parenText(t[2 .. ^1])
@@ -109,6 +115,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let br = newSeqNode()
       n.branches.add br
       n.branchLabels.add unescapeLabel(label)
+      n.branchLines.add l.num
       add n
       push Frame(node: n, cur: br, line: l.num)
       continue
@@ -121,6 +128,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let br = newSeqNode()
       stack[^1].node.branches.add br
       stack[^1].node.branchLabels.add unescapeLabel(cond & (if lbl.len > 0: " → " & lbl else: ""))
+      stack[^1].node.branchLines.add l.num
       stack[^1].cur = br
       continue
     if lw.startsWith("else"):
@@ -130,6 +138,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let br = newSeqNode()
       stack[^1].node.branches.add br
       stack[^1].node.branchLabels.add unescapeLabel(parenText(t[4 .. ^1])[0])
+      stack[^1].node.branchLines.add l.num
       stack[^1].cur = br
       continue
     if lw.startsWith("endif") or lw == "end if":
@@ -150,6 +159,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let br = newSeqNode()
       stack[^1].node.branches.add br
       stack[^1].node.branchLabels.add unescapeLabel(parenText(t)[0])
+      stack[^1].node.branchLines.add l.num
       stack[^1].cur = br
       continue
     if lw.startsWith("endswitch"):
@@ -171,6 +181,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
         ctx.error(l.num, "endwhile sans while")
         continue
       stack[^1].node.no = unescapeLabel(parenText(t)[0])
+      stack[^1].node.endLine = l.num
       discard stack.pop()
       continue
     if lw == "repeat" or lw.startsWith("repeat :") or (lw.startsWith("repeat") and not lw.startsWith("repeat while") and not lw.startsWith("repeatwhile")):
@@ -183,6 +194,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
         if a.endsWith(";"): a.setLen(a.len - 1)
         n.body.children.add ANode(kind: akAction, text: unescapeLabel(a), line: l.num)
         n.body.labels.add ""
+        n.body.labelLines.add 0
       continue
     if lw.startsWith("repeat while") or lw.startsWith("repeatwhile"):
       if stack[^1].node == nil or stack[^1].node.kind != akRepeat:
@@ -191,6 +203,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let n = stack[^1].node
       let (cond, rest) = parenText(t)
       n.cond = unescapeLabel(cond)
+      n.endLine = l.num
       let r = rest.strip()
       let rl = r.toLowerAscii()
       if rl.startsWith("is"):
@@ -214,6 +227,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let br = newSeqNode()
       n.branches.add br
       n.branchLabels.add ""
+      n.branchLines.add l.num
       add n
       push Frame(node: n, cur: br, line: l.num)
       continue
@@ -224,6 +238,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let br = newSeqNode()
       stack[^1].node.branches.add br
       stack[^1].node.branchLabels.add ""
+      stack[^1].node.branchLines.add l.num
       stack[^1].cur = br
       continue
     if lw.startsWith("end fork") or lw.startsWith("endfork") or lw.startsWith("end split") or
@@ -273,7 +288,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
         if not closed: ctx.error(l.num, "note sans « end note »")
         text = parts.join("\n")
       let idx = cur.children.high
-      cur.notes.add (idx, side, unescapeLabel(text))
+      cur.notes.add (idx, side, unescapeLabel(text), l.num)
       continue
     ctx.warn(l.num, "syntaxe d'activité non reconnue, ligne ignorée : " & t)
   for k in countdown(stack.high, 1):
@@ -309,7 +324,7 @@ proc measureSeq(n: ANode) =
   for i, c in n.children:
     measure(c)
     var r = c.w - c.axis
-    for (idx, side, text) in n.notes:
+    for (idx, side, text, _) in n.notes:
       if idx == i:
         let lines = text.split('\n')
         let nw = blockWidth(lines) + 22
@@ -321,7 +336,7 @@ proc measureSeq(n: ANode) =
       right = max(right, textWidth(n.labels[i], 12) + 12)
     h += c.h
     if i < n.children.high: h += Gap + (if n.labels[i].len > 0: 6.0 else: 0.0)
-  for (idx, side, text) in n.notes:
+  for (idx, side, text, _) in n.notes:
     if idx < 0:
       let lines = text.split('\n')
       right = max(right, blockWidth(lines) + 30)
@@ -415,7 +430,7 @@ proc drawSeq(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
   for i, c in n.children:
     let cxl = ax - c.axis
     draw(c, svg, cxl, yy, ctx)
-    for (idx, side, text) in n.notes:
+    for (idx, side, text, noteLine) in n.notes:
       if idx == i:
         let lines = text.split('\n')
         let nw = blockWidth(lines) + 22
@@ -424,6 +439,7 @@ proc drawSeq(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
         let ny = yy + c.h / 2 - nh / 2
         svg.note(nx, ny, nw, nh)
         svg.textBlock(nx + 10, ny + 6, lines)
+        ctx.region(noteLine, nx, ny, nw, nh)
         svg.line((if side == "right": cxl + c.w else: cxl), yy + c.h / 2,
           (if side == "right": nx else: nx + nw), yy + c.h / 2, NoteStroke, 1, "4 3")
     yy += c.h
@@ -431,13 +447,18 @@ proc drawSeq(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
       let extra = if n.labels[i].len > 0: 6.0 else: 0.0
       if not c.terminal:
         svg.arrowDown(ax, yy, yy + Gap + extra)
+        # la flèche renvoie à son étiquette, sinon à ce vers quoi elle pointe
+        let target = if n.labelLines[i] > 0: n.labelLines[i] else: n.children[i + 1].line
+        ctx.link(target, [(ax, yy), (ax, yy + Gap + extra)])
         if n.labels[i].len > 0:
           svg.text(ax + 6, yy + Gap / 2 + 6, n.labels[i], size = 12, fill = Muted)
+          ctx.region(n.labelLines[i], ax + 4, yy + Gap / 2 - 6, textWidth(n.labels[i], 12) + 4, 16)
       yy += Gap + extra
-  for (idx, side, text) in n.notes:
+  for (idx, side, text, noteLine) in n.notes:
     if idx < 0:
       let lines = text.split('\n')
       svg.note(x + 4, y, blockWidth(lines) + 22, blockHeight(lines.len) + 12)
+      ctx.region(noteLine, x + 4, y, blockWidth(lines) + 22, blockHeight(lines.len) + 12)
       svg.textBlock(x + 14, y + 6, lines)
 
 proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
@@ -488,6 +509,7 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
       svg.diamond(ax, y + Diamond)
       if n.cond.len > 0:
         svg.text(ax + Diamond + 6, y + Diamond - 4, n.cond, size = 12)
+        ctx.region(n.line, ax + Diamond + 4, y + Diamond - 16, textWidth(n.cond, 12) + 4, 16)
       ctx.region(n.line, ax - Diamond, y, 2 * Diamond, 2 * Diamond)
     else:
       let x0 = if axes.len > 0: min(axes[0], ax) - 16 else: ax - 20
@@ -507,7 +529,9 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
         svg.arrowHead(a, y + top, PI / 2, "filled")
         if n.branchLabels[i].len > 0:
           let lx = if abs(a - ax) < 0.5: a + 6 else: a + 4
-          svg.text(lx, startY + 15 + (if abs(a - ax) < 0.5: Diamond else: 0.0), n.branchLabels[i], size = 11, fill = Muted)
+          let ly = startY + 15 + (if abs(a - ax) < 0.5: Diamond else: 0.0)
+          svg.text(lx, ly, n.branchLabels[i], size = 11, fill = Muted)
+          if i < n.branchLines.len: ctx.region(n.branchLines[i], lx - 2, ly - 11, textWidth(n.branchLabels[i], 11) + 4, 14)
       else:
         svg.arrowDown(a, startY, y + top)
       draw(b, svg, lefts[i], y + top, ctx)
@@ -545,7 +569,9 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     let ax = x + n.axis
     svg.diamond(ax, y + Diamond)
     ctx.region(n.line, ax - Diamond, y, 2 * Diamond, 2 * Diamond)
-    if n.cond.len > 0: svg.text(ax + Diamond + 6, y + Diamond - 4, n.cond, size = 12)
+    if n.cond.len > 0:
+      svg.text(ax + Diamond + 6, y + Diamond - 4, n.cond, size = 12)
+      ctx.region(n.line, ax + Diamond + 4, y + Diamond - 16, textWidth(n.cond, 12) + 4, 16)
     let by = y + 2 * Diamond + Gap
     svg.arrowDown(ax, y + 2 * Diamond, by)
     if n.yes.len > 0: svg.text(ax + 6, y + 2 * Diamond + 14, n.yes, size = 11, fill = Muted)
@@ -559,7 +585,9 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     let rx = x + n.w - 8
     svg.path("M" & fmtF(ax + Diamond) & " " & fmtF(y + Diamond) & " H" & fmtF(rx) & " V" & fmtF(y + n.h - 4) &
       " H" & fmtF(ax) & " V" & fmtF(y + n.h))
-    if n.no.len > 0: svg.text(rx - 4, y + Diamond + 15, n.no, "end", 11, fill = Muted)
+    if n.no.len > 0:
+      svg.text(rx - 4, y + Diamond + 15, n.no, "end", 11, fill = Muted)
+      if n.endLine > 0: ctx.region(n.endLine, rx - 6 - textWidth(n.no, 11), y + Diamond + 4, textWidth(n.no, 11) + 4, 14)
   of akRepeat:
     let ax = x + n.axis
     svg.diamond(ax, y + Diamond)
@@ -571,7 +599,11 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     let dy = be + Gap + Diamond
     if not n.body.terminal: svg.arrowDown(ax, be, dy - Diamond)
     svg.diamond(ax, dy)
-    if n.cond.len > 0: svg.text(ax + Diamond + 6, dy - 4, n.cond, size = 12)
+    # le bas de la boucle est sa propre ligne : « repeat while »
+    if n.endLine > 0: ctx.region(n.endLine, ax - Diamond, dy - Diamond, 2 * Diamond, 2 * Diamond)
+    if n.cond.len > 0:
+      svg.text(ax + Diamond + 6, dy - 4, n.cond, size = 12)
+      if n.endLine > 0: ctx.region(n.endLine, ax + Diamond + 4, dy - 16, textWidth(n.cond, 12) + 4, 16)
     let lx = x + 8
     svg.path("M" & fmtF(ax - Diamond) & " " & fmtF(dy) & " H" & fmtF(lx) & " V" & fmtF(y + Diamond) &
       " H" & fmtF(ax - Diamond))

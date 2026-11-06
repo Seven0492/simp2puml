@@ -17,6 +17,7 @@ KIND = "plantuml officiel"
 _LINE = re.compile(r"ligne (\d+)")
 _SVG = "{http://www.w3.org/2000/svg}"
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+_PATH_TOKEN = re.compile(r"[A-Za-z]|-?\d+(?:\.\d+)?")
 NOT_INSTALLED = "moteur PlantUML non installé : Préférences > Installer PlantUML"
 
 
@@ -53,24 +54,143 @@ def _box(element: ET.Element) -> tuple[float, float, float, float] | None:
     return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
 
 
-def regions(svg: bytes, first_line: int) -> list[tuple[int, float, float, float, float]]:
-    """Zones cliquables : PlantUML note la ligne d'origine (depuis @start, à partir de 0) de chaque élément."""
+def _normalized(text: str) -> str:
+    return " ".join(text.replace("\u00a0", " ").split())
+
+
+def _text_box(node: ET.Element, box_x: float | None, box_w: float | None) -> tuple[float, float, float, float]:
+    """Boîte d'un texte ; dans un élément, toute sa largeur, comme une ligne de membre."""
+    x, y = float(node.get("x", "0")), float(node.get("y", "0"))
+    size = float(node.get("font-size", "13"))
+    if box_x is not None and box_w is not None:
+        return box_x, y - size, box_w, size * 1.3
+    width = float(node.get("textLength") or len(node.text or "") * size * 0.6)
+    return x, y - size, width, size * 1.3
+
+
+class _SourceFinder:
+    """Retrouve la ligne d'un texte affiché : PlantUML ne note que la ligne des éléments entiers."""
+
+    def __init__(self, text: str):
+        self.lines = [_normalized(line) for line in text.splitlines()]
+        self.cursor = 0
+
+    def in_element(self, shown: str, start: int) -> int | None:
+        """Dans le corps d'un élément (jusqu'à son « } »), sinon une ligne « Nom : membre » ailleurs."""
+        for index in range(start + 1, len(self.lines)):
+            if shown in self.lines[index]:
+                return index + 1
+            if self.lines[index].startswith("}"):
+                break
+        for index, line in enumerate(self.lines):
+            if " : " in line and shown in line.split(" : ", 1)[1]:
+                return index + 1
+        return None
+
+    def in_order(self, shown: str) -> int | None:
+        """Sans élément noté (activité, carte, Gantt…) : dans l'ordre du texte, puis n'importe où."""
+        for index in [*range(self.cursor, len(self.lines)), *range(self.cursor)]:
+            if shown in self.lines[index]:
+                self.cursor = index
+                return index + 1
+        return None
+
+
+def _flatten(path: str) -> list[tuple[float, float]]:
+    """Points d'un tracé M/L/H/V/C/Q absolu, les courbes approchées par des segments."""
+    tokens = _PATH_TOKEN.findall(path)
+    points: list[tuple[float, float]] = []
+    index, command = 0, ""
+
+    def numbers(count: int) -> list[float]:
+        nonlocal index
+        values = [float(v) for v in tokens[index:index + count]]
+        index += count
+        return values
+
+    def curve(controls: list[tuple[float, float]]) -> None:
+        start = points[-1]
+        for step in range(1, 13):
+            t = step / 12
+            nodes = [start, *controls]
+            while len(nodes) > 1:
+                nodes = [(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t) for a, b in zip(nodes, nodes[1:])]
+            points.append(nodes[0])
+
+    while index < len(tokens):
+        if tokens[index].isalpha():
+            command = tokens[index]
+            index += 1
+        if command in ("M", "L"):
+            x, y = numbers(2)
+            points.append((x, y))
+        elif command == "H" and points:
+            points.append((numbers(1)[0], points[-1][1]))
+        elif command == "V" and points:
+            points.append((points[-1][0], numbers(1)[0]))
+        elif command == "C" and points:
+            v = numbers(6)
+            curve([(v[0], v[1]), (v[2], v[3]), (v[4], v[5])])
+        elif command == "Q" and points:
+            v = numbers(4)
+            curve([(v[0], v[1]), (v[2], v[3])])
+        else:
+            break  # Commande inattendue : garder le début du tracé.
+    return points
+
+
+def regions_and_links(svg: bytes, first_line: int, text: str = "") -> tuple[list, list]:
+    """Zones cliquables et tracés des flèches. PlantUML note la ligne de chaque élément (depuis
+    @start, à partir de 0) ; celle de ses textes (attributs, méthodes…) est retrouvée dans le source."""
     try:
         root = ET.fromstring(svg)
     except ET.ParseError:
-        return []
-    found = []
-    for group in root.iter(f"{_SVG}g"):
-        line = group.get("data-source-line")
-        if line is None or not line.isdigit():
-            continue
-        try:
-            box = _box(group)
-        except ValueError:
-            continue
-        if box is not None:
-            found.append((first_line + int(line), *box))
-    return found
+        return [], []
+    found: list = []
+    links: list = []
+    finder = _SourceFinder(text)
+
+    def visit(element: ET.Element, owner: int | None, box: tuple[float, float, float, float] | None) -> None:
+        for child in element:
+            tag = child.tag.removeprefix(_SVG)
+            if tag == "g":
+                line = child.get("data-source-line")
+                if line is not None and line.isdigit():
+                    source = first_line - 1 + int(line)  # indice dans le texte (à partir de 0)
+                    is_link = child.get("class") == "link"
+                    try:
+                        own_box = None if is_link else _box(child)
+                    except ValueError:
+                        own_box = None
+                    if own_box is not None:
+                        found.append((source + 1, *own_box))
+                    if is_link:
+                        # le premier tracé est le trait ; les suivants, les pointes
+                        path = next(child.iter(f"{_SVG}path"), None)
+                        if path is not None:
+                            points = _flatten(path.get("d") or "")
+                            if len(points) >= 2:
+                                links.append((source + 1, len(found), points))
+                    visit(child, source, own_box)
+                else:
+                    visit(child, owner, box)
+            elif tag == "text":
+                shown = _normalized("".join(child.itertext()))
+                if len(shown) < 2 and owner is None:
+                    continue  # « 1 », « 2 » : trop courts pour être retrouvés sans contexte
+                line = finder.in_element(shown, owner) if owner is not None else finder.in_order(shown)
+                if line is not None:
+                    is_member = owner is not None and line - 1 != owner
+                    found.append((line, *_text_box(child, box[0] if is_member and box else None,
+                                                   box[2] if is_member and box else None)))
+            else:
+                visit(child, owner, box)
+
+    try:
+        visit(root, None, None)
+    except ValueError:
+        pass  # Nombre inattendu : garder ce qui est déjà trouvé.
+    return found, links
 
 
 def _error_page(message: str) -> bytes:
@@ -92,8 +212,12 @@ def reply(rid: str, rendering: render.Rendering, block: int, text: str) -> bytes
     if rendering.error:
         match = _LINE.search(rendering.error)
         head.append(f"DIAG\t{match.group(1) if match else first_line}\terror\t{_clean(rendering.error)}")
-    for line, x, y, w, h in regions(svg, first_line):
+    found, links = regions_and_links(svg, first_line, text)
+    for line, x, y, w, h in found:
         head.append(f"REGION\t{line}\t{x:g}\t{y:g}\t{w:g}\t{h:g}")
+    for line, after, points in links:
+        path = " ".join(f"{x:g} {y:g}" for x, y in points)
+        head.append(f"LINK\t{line}\t{after}\t{path}")
     head.append(f"SVG\t{len(svg)}")
     return ("\n".join(head) + "\n").encode() + svg
 

@@ -9,7 +9,7 @@ use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use super::theme;
 use super::workspace_view::WorkspaceView;
 use crate::keymap;
-use crate::model::preferences::{InterfaceChoice, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, LinkClick, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::services::preferences_service;
 use crate::viewmodel::workspace_vm::{PathPurpose, WorkspaceViewModel};
 
@@ -271,6 +271,149 @@ fn missing_official_engine_offers_installation(cx: &mut TestAppContext) {
     assert!(s.vm.read_with(s.window, |vm, cx| vm.official_engine_missing(cx)));
     assert!(s.window.debug_bounds("pref-install-official").is_some(), "le bouton est proposé");
     unsafe { std::env::remove_var("SIMP2PUML_PREVIEW") };
+}
+
+/// Parcours complet : un clic sur un attribut dans l'aperçu place le curseur sur sa ligne.
+#[gpui::test]
+fn clicking_a_property_in_the_preview_goes_to_its_line(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let path = temp_file("clic.puml", "@startuml\nclass A {\n  +x : int\n  -y : String\n  +f() : void\n}\n@enduml\n");
+    let s = open(cx, vec![path]);
+    s.window.run_until_parked();
+    let doc = s.window.read(|cx| s.vm.read(cx).active_document().clone());
+    let line_of_member = |wanted: usize, s: &Session| {
+        s.window.read(|cx| {
+            let d = doc.read(cx);
+            let output = d.output().expect("rendu");
+            // plus petite zone de cette ligne ; le clic passe par le même calcul que la souris
+            let r = output
+                .regions
+                .iter()
+                .filter(|r| r.line == wanted)
+                .min_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)))
+                .expect("zone du membre")
+                .clone();
+            let (ox, oy) = d.scene_origin();
+            (ox + (r.x + r.w / 2.0) * d.preview.zoom, oy + (r.y + r.h / 2.0) * d.preview.zoom)
+        })
+    };
+    for wanted in [3, 4, 5] {
+        let (x, y) = line_of_member(wanted, &s);
+        assert!(doc.update(s.window, |d, cx| d.click_preview(x, y, cx)), "ligne {wanted}");
+        s.window.run_until_parked();
+        let (line, _) = s.window.read(|cx| s.vm.read(cx).active_editor(cx).read(cx).cursor_line_col());
+        assert_eq!(line, wanted, "le curseur va à la ligne du membre");
+    }
+}
+
+/// Remplace le rendu affiché par deux flèches qui se croisent, et une plus loin.
+fn crossing_arrows(s: &mut Session) -> (Entity<crate::viewmodel::document_vm::DocumentViewModel>, (f32, f32), (f32, f32)) {
+    use crate::model::diagram::Link;
+    let doc = s.window.read(|cx| s.vm.read(cx).active_document().clone());
+    let scene_point = doc.update(s.window, |d, _| {
+        let r = d.rendering.as_mut().expect("rendu");
+        let mut output = (*r.output).clone();
+        output.regions.clear();
+        output.links = vec![
+            Link { line: 2, after: 0, points: vec![(0.0, 0.0), (200.0, 200.0)] },
+            Link { line: 3, after: 0, points: vec![(200.0, 0.0), (0.0, 200.0)] },
+            Link { line: 4, after: 0, points: vec![(0.0, 300.0), (200.0, 300.0)] },
+        ];
+        r.output = std::sync::Arc::new(output);
+        let (ox, oy) = d.scene_origin();
+        let z = d.preview.zoom;
+        ((ox + 100.0 * z, oy + 100.0 * z), (ox + 100.0 * z, oy + 300.0 * z))
+    });
+    (doc, scene_point.0, scene_point.1)
+}
+
+fn cursor_line(s: &Session) -> usize {
+    s.window.read(|cx| s.vm.read(cx).active_editor(cx).read(cx).cursor_line_col().0)
+}
+
+#[gpui::test]
+fn overlapping_arrows_ask_which_one_was_meant(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let path = temp_file("croise.puml", "@startuml\nA --> B : premier\nC --> D : second\nE --> F\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    let (doc, crossing, alone) = crossing_arrows(&mut s);
+
+    // une seule flèche : droit à sa ligne, sans menu
+    assert!(doc.update(s.window, |d, cx| d.click_preview(alone.0, alone.1, cx)));
+    s.window.run_until_parked();
+    assert_eq!(cursor_line(&s), 4);
+    assert!(doc.read_with(s.window, |d, _| d.link_menu.is_none()));
+
+    // au croisement : un menu qui cite les deux lignes du source
+    doc.update(s.window, |d, cx| d.click_preview(crossing.0, crossing.1, cx));
+    s.window.run_until_parked();
+    let menu = doc.read_with(s.window, |d, _| d.link_menu.clone()).expect("menu");
+    assert_eq!(menu.choices.iter().map(|c| c.line).collect::<Vec<_>>().len(), 2);
+    assert!(menu.choices.iter().any(|c| c.line == 2 && c.label == "A --> B : premier"), "{menu:?}");
+    assert!(menu.choices.iter().any(|c| c.line == 3 && c.label == "C --> D : second"), "{menu:?}");
+    assert_eq!(cursor_line(&s), 4, "rien ne bouge avant le choix");
+
+    // un clic à côté referme sans rien faire d'autre
+    doc.update(s.window, |d, cx| d.click_preview(1.0, 1.0, cx));
+    assert!(doc.read_with(s.window, |d, _| d.link_menu.is_none()));
+    assert_eq!(cursor_line(&s), 4);
+
+    // un vrai clic sur l'entrée va à la ligne choisie et referme le menu
+    doc.update(s.window, |d, cx| d.click_preview(crossing.0, crossing.1, cx));
+    s.click("link-choice-3");
+    assert_eq!(cursor_line(&s), 3);
+    assert!(doc.read_with(s.window, |d, _| d.link_menu.is_none()));
+}
+
+#[gpui::test]
+fn the_click_mode_of_arrows_is_a_preference(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let path = temp_file("modes.puml", "@startuml\nA --> B\nC --> D\nE --> F\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    let (doc, crossing, _) = crossing_arrows(&mut s);
+    assert_eq!(s.preferences().link_click, LinkClick::Along, "toute la longueur par défaut");
+    // le milieu d'une flèche réagit en mode « toute la longueur »…
+    doc.update(s.window, |d, cx| d.hover(crossing.0, crossing.1, cx));
+    assert_eq!(doc.read_with(s.window, |d, _| d.hovered_links.len()), 2);
+    // …mais plus en mode « les bouts », qui ne garde que le départ et la pointe
+    s.click("tb-preferences");
+    s.click("pref-link-ends");
+    assert_eq!(preferences_service::load().0.link_click, LinkClick::Ends, "enregistré");
+    doc.update(s.window, |d, cx| d.hover(crossing.0, crossing.1, cx));
+    assert!(doc.read_with(s.window, |d, _| d.hovered_links.is_empty()));
+    let start = doc.read_with(s.window, |d, _| d.scene_origin());
+    doc.update(s.window, |d, cx| d.hover(start.0 + 5.0, start.1 + 5.0, cx));
+    assert_eq!(doc.read_with(s.window, |d, _| d.hovered_links.clone()), vec![0], "le départ réagit");
+}
+
+#[gpui::test]
+fn escape_closes_the_arrow_menu(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let path = temp_file("echap.puml", "@startuml\nA --> B\nC --> D\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    let (doc, crossing, _) = crossing_arrows(&mut s);
+    // vrai clic : il donne le focus à l'aperçu, d'où Échap est lu
+    s.window.run_until_parked();
+    let preview = s.window.debug_bounds("preview").expect("aperçu");
+    let (x, y) = (f32::from(preview.left()) + crossing.0, f32::from(preview.top()) + crossing.1);
+    s.window.simulate_click(gpui::point(gpui::px(x), gpui::px(y)), Modifiers::none());
+    s.window.run_until_parked();
+    assert!(doc.read_with(s.window, |d, _| d.link_menu.is_some()), "le clic réel a ouvert le menu");
+    s.window.simulate_keystrokes("escape");
+    s.window.run_until_parked();
+    assert!(doc.read_with(s.window, |d, _| d.link_menu.is_none()));
 }
 
 #[gpui::test]

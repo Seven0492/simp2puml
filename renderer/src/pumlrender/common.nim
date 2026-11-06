@@ -21,13 +21,20 @@ type
     num*: int
     text*: string
 
+  LinkPath* = object
+    ## Tracé d'une flèche (coordonnées du SVG) : cliquable sur sa longueur.
+    line*: int
+    after*: int   ## nombre de régions déjà dessinées : les suivantes passent au-dessus
+    points*: seq[(float, float)]
+
   Context* = ref object
     diags*: seq[Diagnostic]
     regions*: seq[Region]
+    links*: seq[LinkPath]
 
   Meta* = object
     title*, header*, footer*, caption*, legend*: string
-    titleLine*, legendLine*: int
+    titleLine*, legendLine*, headerLine*, footerLine*, captionLine*: int
     leftToRight*: bool
     legendAlign*: string
 
@@ -131,6 +138,21 @@ proc info*(ctx: Context, line: int, msg: string) =
 proc region*(ctx: Context, line: int, x, y, w, h: float) =
   if line > 0:
     ctx.regions.add Region(line: line, x: x, y: y, w: w, h: h)
+
+proc link*(ctx: Context, line: int, points: openArray[(float, float)]) =
+  if line > 0 and points.len >= 2:
+    ctx.links.add LinkPath(line: line, after: ctx.regions.len, points: @points)
+
+proc linkCubic*(ctx: Context, line: int, p0, c1, c2, p3: (float, float)) =
+  ## Courbe de Bézier approchée par des segments.
+  const Steps = 12
+  var pts: seq[(float, float)]
+  for i in 0 .. Steps:
+    let t = i.float / Steps
+    let u = 1 - t
+    pts.add (u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p3[0],
+             u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p3[1])
+  ctx.link(line, pts)
 
 proc hasErrors*(ctx: Context): bool =
   for d in ctx.diags:

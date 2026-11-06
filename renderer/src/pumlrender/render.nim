@@ -8,6 +8,7 @@ type RenderResult* = object
   kind*: DiagramKind
   diags*: seq[Diagnostic]
   regions*: seq[Region]
+  links*: seq[LinkPath]
   blocks*: int
 
 proc renderPuml*(text: string, blockIndex = 0): RenderResult =
@@ -71,3 +72,4 @@ proc renderPuml*(text: string, blockIndex = 0): RenderResult =
   result.kind = doc.kind
   result.diags = ctx.diags
   result.regions = ctx.regions
+  result.links = ctx.links
