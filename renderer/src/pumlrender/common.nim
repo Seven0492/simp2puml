@@ -620,10 +620,11 @@ proc readDelimited*(sc: var Scanner, open, close: char): string =
   result = sc.s[start ..< sc.s.len]
 
 proc startsWithWord*(s, word: string): bool =
-  let t = s
-  if t.len < word.len: return false
-  if cmpIgnoreCase(t[0 ..< word.len], word) != 0: return false
-  t.len == word.len or t[word.len] notin IdentChars
+  # sans copie : appelé pour chaque mot-clé de chaque ligne
+  if s.len < word.len: return false
+  for i in 0 ..< word.len:
+    if s[i].toLowerAscii != word[i].toLowerAscii: return false
+  s.len == word.len or s[word.len] notin IdentChars
 
 proc afterWord*(s, word: string): string = s[word.len .. ^1].strip()
 

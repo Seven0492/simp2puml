@@ -1428,6 +1428,9 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
 
 proc segHits(p, q: (float, float), x, y, w, h: float): bool =
   ## Le segment p→q traverse-t-il le rectangle (Liang–Barsky) ?
+  # le cas courant, de loin : le segment passe à côté, sans division
+  if max(p[0], q[0]) < x or min(p[0], q[0]) > x + w or max(p[1], q[1]) < y or min(p[1], q[1]) > y + h:
+    return false
   var t0 = 0.0
   var t1 = 1.0
   let dx = q[0] - p[0]

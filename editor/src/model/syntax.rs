@@ -52,7 +52,14 @@ fn is_ident(c: char) -> bool {
 
 /// Découpe une ligne en segments colorés (plages d'octets contiguës couvrant la ligne).
 pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, Token)> {
-    let mut out: Vec<(Range<usize>, Token)> = Vec::new();
+    let mut out = Vec::new();
+    highlight_into(line, state, &mut out);
+    out
+}
+
+/// Comme `highlight_line`, dans une liste réutilisable.
+fn highlight_into(line: &str, state: &mut LineState, out: &mut Vec<(Range<usize>, Token)>) {
+    out.clear();
     let push = |r: Range<usize>, t: Token, out: &mut Vec<(Range<usize>, Token)>| {
         if r.is_empty() {
             return;
@@ -71,13 +78,13 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
     if state.in_block_comment {
         match line.find("'/") {
             Some(p) => {
-                push(0..p + 2, Token::Comment, &mut out);
+                push(0..p + 2, Token::Comment, out);
                 i = p + 2;
                 state.in_block_comment = false;
             }
             None => {
-                push(0..n, Token::Comment, &mut out);
-                return out;
+                push(0..n, Token::Comment, out);
+                return;
             }
         }
     }
@@ -85,39 +92,39 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
     let lead = n - trimmed.len();
     let lead = if i == 0 { lead } else { usize::MAX };
     if i == 0 && lead > 0 && lead != usize::MAX {
-        push(0..lead, Token::Plain, &mut out);
+        push(0..lead, Token::Plain, out);
         i = lead;
     }
     if trimmed.starts_with('\'') {
-        push(i..n, Token::Comment, &mut out);
-        return out;
+        push(i..n, Token::Comment, out);
+        return;
     }
     if trimmed.starts_with('@') {
-        push(i..n, Token::Directive, &mut out);
-        return out;
+        push(i..n, Token::Directive, out);
+        return;
     }
     if trimmed.starts_with('!') {
-        push(i..n, Token::Preprocessor, &mut out);
-        return out;
+        push(i..n, Token::Preprocessor, out);
+        return;
     }
     let mut after_colon = false;
     while i < n {
         let c = line[i..].chars().next().unwrap();
         let cl = c.len_utf8();
         if after_colon {
-            push(i..n, Token::Label, &mut out);
+            push(i..n, Token::Label, out);
             break;
         }
         if line[i..].starts_with("/'") {
             match line[i + 2..].find("'/") {
                 Some(p) => {
-                    push(i..i + 2 + p + 2, Token::Comment, &mut out);
+                    push(i..i + 2 + p + 2, Token::Comment, out);
                     i += p + 4;
                 }
                 None => {
-                    push(i..n, Token::Comment, &mut out);
+                    push(i..n, Token::Comment, out);
                     state.in_block_comment = true;
-                    return out;
+                    return;
                 }
             }
             continue;
@@ -125,12 +132,12 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
         match c {
             '"' => {
                 let end = line[i + 1..].find('"').map(|p| i + 1 + p + 1).unwrap_or(n);
-                push(i..end, Token::Str, &mut out);
+                push(i..end, Token::Str, out);
                 i = end;
             }
             '<' if line[i..].starts_with("<<") => {
                 let end = line[i + 2..].find(">>").map(|p| i + 2 + p + 2).unwrap_or(n);
-                push(i..end, Token::Stereotype, &mut out);
+                push(i..end, Token::Stereotype, out);
                 i = end;
             }
             // en début de ligne, # est une visibilité (membre protégé), pas une couleur
@@ -139,16 +146,16 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
                 while e < n && (bytes[e].is_ascii_alphanumeric() || bytes[e] == b'/' || bytes[e] == b';') {
                     e += 1;
                 }
-                push(i..e, Token::Color, &mut out);
+                push(i..e, Token::Color, out);
                 i = e;
             }
             ':' => {
-                push(i..i + 1, Token::Arrow, &mut out);
+                push(i..i + 1, Token::Arrow, out);
                 i += 1;
                 after_colon = true;
             }
             '{' | '}' | '[' | ']' | '(' | ')' => {
-                push(i..i + 1, Token::Bracket, &mut out);
+                push(i..i + 1, Token::Bracket, out);
                 i += 1;
             }
             '-' | '.' | '=' | '<' | '>' | '|' | '*' | '\\' | '/' | '^' => {
@@ -165,7 +172,7 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
                 }
                 let tok = &line[i..e];
                 let arrow = tok.contains('-') || tok.contains("..") || tok.contains('>') || tok.contains('<');
-                push(i..e.max(i + 1), if arrow { Token::Arrow } else { Token::Plain }, &mut out);
+                push(i..e.max(i + 1), if arrow { Token::Arrow } else { Token::Plain }, out);
                 i = e.max(i + 1);
             }
             c if is_ident(c) => {
@@ -182,16 +189,15 @@ pub fn highlight_line(line: &str, state: &mut LineState) -> Vec<(Range<usize>, T
                 } else {
                     Token::Plain
                 };
-                push(i..e, t, &mut out);
+                push(i..e, t, out);
                 i = e;
             }
             _ => {
-                push(i..i + cl, Token::Plain, &mut out);
+                push(i..i + cl, Token::Plain, out);
                 i += cl;
             }
         }
     }
-    out
 }
 
 /// États de début de ligne, valides sur un préfixe du document.
@@ -212,10 +218,11 @@ impl SyntaxCache {
         if self.states.is_empty() {
             self.states.push(LineState::default());
         }
+        let mut segments = Vec::new();
         while self.states.len() <= line && self.states.len() <= buffer.line_count() {
             let l = self.states.len() - 1;
             let mut st = self.states[l];
-            highlight_line(buffer.line_text(l), &mut st);
+            highlight_into(buffer.line_text(l), &mut st, &mut segments);
             self.states.push(st);
         }
         self.states[line.min(self.states.len() - 1)]

@@ -168,6 +168,11 @@ impl Scene {
                     }
                 }
                 Item::Text { text, .. } => {
+                    // la hauteur d'abord : gratuite, elle écarte presque tous les textes, alors que
+                    // les mesurer tous à chaque image coûtait 50 ms à 150 classes
+                    if text.y < zone.y || text.y > zone.y + zone.h {
+                        continue;
+                    }
                     let width = text_width(text);
                     let x = match text.anchor {
                         Anchor::Start => text.x,
@@ -661,6 +666,30 @@ const NAMED_COLORS: &[(&str, u32)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_hover_box_only_measures_the_texts_at_its_height() {
+        let scene = Scene::parse(concat!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">"#,
+            r#"<text x="10" y="20" font-size="13">loin au-dessus</text>"#,
+            r#"<text x="10" y="100" font-size="13">visé</text>"#,
+            r#"<text x="10" y="200" font-size="13">loin en dessous</text>"#,
+            "</svg>",
+        ))
+        .unwrap();
+        let mut measured = Vec::new();
+        let zone = Bounds { x: 0.0, y: 80.0, w: 200.0, h: 30.0 };
+        let content = scene.content_bounds(
+            zone,
+            &mut |t| {
+                measured.push(t.content.clone());
+                50.0
+            },
+            &mut |y| y,
+            1.0,
+        );
+        assert_eq!(measured, ["visé"]);
+        assert!(content.is_some());
+    }
 
     #[test]
     fn the_shapes_of_each_arrow_are_found() {

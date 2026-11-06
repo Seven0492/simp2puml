@@ -19,6 +19,12 @@ roxmltree = "0.20"
 # plateforme de test sans fenêtre : parcours réels de l'interface (clics, raccourcis)
 gpui = { version = "0.2.2", features = ["test-support"] }
 
+# Mesuré sur l'éditeur complet : 6 à 14 % de temps d'image en moins, binaire de 28 à 18 Mo.
+# Contrepartie : une construction de release complète plus lente (une dizaine de minutes).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [profile.dev]
 opt-level = 1
 

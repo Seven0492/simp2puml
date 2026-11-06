@@ -1,8 +1,9 @@
 //! Modèle : tampon de texte (contenu, sélection, annulation, opérations
 //! d'édition), indépendant de l'interface et testable sans GPUI.
 //!
-//! Comme la `Rope` de Zed, l'index des débuts de ligne est mis à jour de
-//! façon incrémentale : une frappe ne relit jamais tout le document.
+//! Une simple `String` et l'index de ses débuts de ligne, mis à jour sans relire le texte. Une
+//! frappe reste linéaire (déplacer la fin du texte), mais prend 15 µs sur 1 Mo : la `Rope` de Zed,
+//! faite pour des fichiers bien plus gros et l'accès concurrent, n'apporterait rien ici.
 
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -47,6 +48,7 @@ pub struct Buffer {
     /// (consommée par le cache de coloration syntaxique).
     changed_from: Option<usize>,
     saved_hash: u64,
+    saved_len: usize,
     dirty_cache: Cell<(u64, bool)>,
 }
 
@@ -81,9 +83,11 @@ impl Buffer {
             version: 0,
             changed_from: None,
             saved_hash: 0,
+            saved_len: 0,
             dirty_cache: Cell::new((0, false)),
         };
         b.saved_hash = text_hash(&b.text);
+        b.saved_len = b.text.len();
         b.reindex();
         b
     }
@@ -155,19 +159,22 @@ impl Buffer {
         if v == self.version {
             return d;
         }
-        let d = text_hash(&self.text) != self.saved_hash;
+        // la longueur suffit presque toujours : une frappe ne relit pas tout le texte
+        let d = self.text.len() != self.saved_len || text_hash(&self.text) != self.saved_hash;
         self.dirty_cache.set((self.version, d));
         d
     }
 
     pub fn mark_saved(&mut self) {
         self.saved_hash = text_hash(&self.text);
+        self.saved_len = self.text.len();
         self.dirty_cache.set((self.version, false));
     }
 
     /// Texte jamais enregistré (import) : modifié tant qu'il n'est pas enregistré.
     pub fn mark_unsaved(&mut self) {
         self.saved_hash = text_hash(&self.text).wrapping_add(1);
+        self.saved_len = self.text.len();
         self.dirty_cache.set((self.version, true));
     }
 
@@ -768,19 +775,19 @@ impl Buffer {
     /// caractère) : les plages renvoyées sont toujours des positions du texte
     /// d'origine, même quand `to_lowercase` changerait la longueur (« İ », « ẞ »).
     pub fn find_all(&self, query: &str) -> Vec<Range<usize>> {
-        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
+        let fold = |c: char| if c.is_ascii() { c.to_ascii_lowercase() } else { c.to_lowercase().next().unwrap_or(c) };
         let needle: Vec<char> = query.chars().map(fold).collect();
         let mut out = Vec::new();
-        let Some(&first) = needle.first() else { return out };
-        let hay: Vec<(usize, char)> = self.text.char_indices().map(|(i, c)| (i, fold(c))).collect();
-        let mut i = 0;
-        while i + needle.len() <= hay.len() {
-            if hay[i].1 == first && hay[i..i + needle.len()].iter().zip(&needle).all(|((_, a), b)| a == b) {
-                let end = hay.get(i + needle.len()).map_or(self.text.len(), |(b, _)| *b);
-                out.push(hay[i].0..end);
-                i += needle.len();
-            } else {
-                i += 1;
+        let Some((&first, rest)) = needle.split_first() else { return out };
+        let mut chars = self.text.char_indices();
+        while let Some((start, c)) = chars.next() {
+            if fold(c) != first {
+                continue;
+            }
+            let mut ahead = chars.clone();
+            if rest.iter().all(|wanted| ahead.next().is_some_and(|(_, c)| fold(c) == *wanted)) {
+                out.push(start..ahead.offset());
+                chars = ahead;
             }
         }
         out
@@ -841,6 +848,52 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dirty_notices_an_edit_of_the_same_length() {
+        let mut b = Buffer::new("abc");
+        assert!(!b.is_dirty());
+        b.replace_range(0..1, "z");
+        assert!(b.is_dirty(), "même longueur, autre texte");
+        b.replace_range(0..1, "a");
+        assert!(!b.is_dirty(), "de retour au texte enregistré");
+        b.insert("x");
+        assert!(b.is_dirty());
+        b.mark_saved();
+        assert!(!b.is_dirty());
+        b.mark_unsaved();
+        assert!(b.is_dirty(), "jamais enregistré, même sans changer de longueur");
+    }
+
+    #[test]
+    fn utf16_offsets_match_a_character_walk() {
+        // caractères de 1 à 4 octets, de part et d'autre des blocs de 256 octets
+        let text = "aé€😀".repeat(60) + "fin";
+        let b = Buffer::new(&text);
+        let mut units = 0;
+        for (i, c) in text.char_indices() {
+            assert_eq!(b.offset_to_utf16(i), units);
+            assert_eq!(b.offset_from_utf16(units), i);
+            if c.len_utf16() == 2 {
+                assert_eq!(b.offset_from_utf16(units + 1), i + c.len_utf8(), "milieu d'une paire : après le caractère");
+            }
+            units += c.len_utf16();
+        }
+        assert_eq!(b.offset_to_utf16(text.len()), units);
+        assert_eq!(b.offset_from_utf16(units), text.len());
+        assert_eq!(b.offset_from_utf16(units + 99), text.len());
+    }
+
+    #[test]
+    fn find_all_handles_overlaps_case_and_long_characters() {
+        let b = Buffer::new("aaa AbA İx ẞ é É");
+        assert_eq!(b.find_all("aa"), vec![0..2], "sans chevauchement");
+        assert_eq!(b.find_all("AB"), vec![4..6]);
+        assert_eq!(b.find_all("é"), vec![16..18, 19..21]);
+        assert_eq!(b.find_all("ix").len(), 1, "le pliage garde une minuscule par caractère");
+        assert!(b.find_all("").is_empty());
+        assert!(b.find_all("absent").is_empty());
+        assert_eq!(Buffer::new("xa").find_all("ab"), Vec::<Range<usize>>::new(), "la fin du texte n'est pas une occurrence");
+    }
 
     #[test]
     fn lines_and_points() {

@@ -213,7 +213,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     (qi == q.len()).then(|| score - c.len() as i32)
 }
 
-/// Contexte grossier du document, pour proposer les bons mots-clés.
+/// Contexte grossier du document, pour proposer les bons mots-clés : séquence, activité.
 fn diagram_flavour(text: &str) -> (bool, bool) {
     let mut sequence = false;
     let mut activity = false;
@@ -233,9 +233,32 @@ fn diagram_flavour(text: &str) -> (bool, bool) {
     (sequence, activity)
 }
 
+/// Noms et contexte de tout le document sauf la ligne en cours. Noms et contexte se lisent ligne
+/// par ligne : en tapant dans une même ligne, le reste n'est pas relu (il est seulement comparé,
+/// bien moins coûteux), et l'autocomplétion ne ralentit plus la frappe sur un gros document.
+#[derive(Default)]
+pub struct DocumentIndex {
+    known: Option<(String, String)>,
+    names: BTreeSet<String>,
+    flavour: (bool, bool),
+}
+
+impl DocumentIndex {
+    fn update(&mut self, before: &str, after: &str) {
+        if self.known.as_ref().is_some_and(|(b, a)| b == before && a == after) {
+            return;
+        }
+        self.names = document_names(before);
+        self.names.extend(document_names(after));
+        let (first, second) = (diagram_flavour(before), diagram_flavour(after));
+        self.flavour = (first.0 || second.0, first.1 || second.1);
+        self.known = Some((before.to_string(), after.to_string()));
+    }
+}
+
 /// Propositions pour le curseur `cursor` ; `explicit` = demandé par Ctrl+Espace
 /// (propose même sans préfixe).
-pub fn complete(text: &str, cursor: usize, explicit: bool) -> Option<CompletionList> {
+pub fn complete(text: &str, cursor: usize, explicit: bool, index: &mut DocumentIndex) -> Option<CompletionList> {
     let line_start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let before = &text[line_start..cursor];
     let trimmed = before.trim_start();
@@ -270,6 +293,8 @@ pub fn complete(text: &str, cursor: usize, explicit: bool) -> Option<CompletionL
     }
     let range = line_start + word_start..cursor;
     let mut candidates: Vec<Completion> = Vec::new();
+    let line_end = text[cursor..].find('\n').map_or(text.len(), |i| cursor + i);
+    let line = &text[line_start..line_end];
     let word = |label: &str, kind, detail| Completion { label: label.to_string(), insert: label.to_string(), kind, detail };
 
     if prefix.starts_with('@') || (at_line_start && trimmed.starts_with('@')) {
@@ -277,7 +302,9 @@ pub fn complete(text: &str, cursor: usize, explicit: bool) -> Option<CompletionL
     } else {
         let first_word = at_line_start && !before[..word_start].trim().contains(' ');
         if first_word {
-            let (sequence, activity) = diagram_flavour(text);
+            index.update(&text[..line_start], &text[line_end..]);
+            let here = diagram_flavour(line);
+            let (sequence, activity) = (index.flavour.0 || here.0, index.flavour.1 || here.1);
             // les déclarations attendent un nom : on insère l'espace qui suit
             candidates.extend(DECLARATIONS.iter().map(|(k, d)| {
                 let standalone = k.ends_with("direction") || *k == "together" || *k == "legend";
@@ -306,9 +333,10 @@ pub fn complete(text: &str, cursor: usize, explicit: bool) -> Option<CompletionL
             }
         }
         // noms du document (hors mot en cours de frappe)
-        for name in document_names(text) {
-            if name != prefix && !name.contains(' ') {
-                candidates.push(word(&name, CompletionKind::Name, "déclaré dans le document"));
+        index.update(&text[..line_start], &text[line_end..]);
+        for name in index.names.iter().chain(&document_names(line)) {
+            if name != prefix && !name.contains(' ') && fuzzy_score(prefix, name).is_some() {
+                candidates.push(word(name, CompletionKind::Name, "déclaré dans le document"));
             }
         }
     }
@@ -358,6 +386,38 @@ pub fn expand(insert: &str, indent: &str) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Range;
+
+    fn complete(text: &str, cursor: usize, explicit: bool) -> Option<CompletionList> {
+        super::complete(text, cursor, explicit, &mut DocumentIndex::default())
+    }
+
+    #[test]
+    fn the_index_gives_the_same_list_as_reading_everything() {
+        fn seen(l: Option<CompletionList>) -> Option<(Vec<String>, Range<usize>)> {
+            l.map(|l| (l.items.iter().map(|c| c.insert.clone()).collect(), l.range))
+        }
+        let mut index = DocumentIndex::default();
+        let mut text = String::from("@startuml\nclass Alpha\nparticipant Bob\nA -> Bob : x\n\nclass Delta\n@enduml\n");
+        // frappe dans une ligne, puis une autre, puis une modification ailleurs dans le document
+        let mut at = text.find("\n\nclass Delta").unwrap() + 1;
+        for typed in ["D", "e", "l"] {
+            text.insert_str(at, typed);
+            at += typed.len();
+            assert_eq!(seen(super::complete(&text, at, false, &mut index)), seen(complete(&text, at, false)), "{text}");
+        }
+        text.insert_str(at, "\nA");
+        at += 2;
+        assert_eq!(seen(super::complete(&text, at, false, &mut index)), seen(complete(&text, at, false)));
+        text = text.replace("class Alpha", "class Zulu");
+        at = text.find("\nA\n").unwrap() + 2;
+        let list = super::complete(&text, at, true, &mut index);
+        assert_eq!(seen(list), seen(complete(&text, at, true)), "une ligne changée ailleurs compte aussi");
+        // le contexte dépend aussi de la ligne en cours
+        let mut fresh = DocumentIndex::default();
+        let seq = "@startuml\nparticipant A\nlo";
+        assert!(super::complete(seq, seq.len(), false, &mut fresh).is_some_and(|l| l.items.iter().any(|c| c.label == "loop")));
+    }
 
     #[test]
     fn case_folding_that_changes_length_does_not_panic() {

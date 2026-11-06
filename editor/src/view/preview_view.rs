@@ -1,7 +1,8 @@
 //! Vue de l'aperçu : dessine la scène vectorielle du document avec les
 //! primitives GPUI (quads, chemins, texte), sans bitmap intermédiaire.
 //!
-//! - Zoom et défilement ne sont qu'une transformation : rien n'est recalculé.
+//! - Zoom et défilement ne changent que la transformation : le moteur ne repart pas, mais chaque
+//!   image reconstruit ses chemins et, à chaque nouveau zoom, remet les textes en forme.
 //! - Seuls les éléments visibles sont dessinés (élagage par boîte englobante,
 //!   comme la scène de Zed).
 //! - Les rectangles et cercles sans pointillés passent par des quads GPU

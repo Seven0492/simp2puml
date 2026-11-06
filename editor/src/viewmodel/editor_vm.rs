@@ -64,6 +64,7 @@ pub struct LineMark {
 pub struct EditorViewModel {
     pub buffer: Buffer,
     syntax: SyntaxCache,
+    document_index: completion::DocumentIndex,
     /// Texte en cours de composition (méthode de saisie).
     pub marked_range: Option<Range<usize>>,
     pub single_line: bool,
@@ -92,6 +93,7 @@ impl EditorViewModel {
         Self {
             buffer: Buffer::new(text),
             syntax: SyntaxCache::default(),
+            document_index: completion::DocumentIndex::default(),
             marked_range: None,
             single_line,
             placeholder: SharedString::from(placeholder.to_string()),
@@ -463,7 +465,7 @@ impl EditorViewModel {
             .as_ref()
             .and_then(|m| m.list.items.get(m.selected))
             .map(|c| c.label.clone());
-        self.completions = completion::complete(self.buffer.text(), cursor, explicit).map(|list| {
+        self.completions = completion::complete(self.buffer.text(), cursor, explicit, &mut self.document_index).map(|list| {
             // conserver l'élément sélectionné s'il est toujours proposé
             let selected = selected_label
                 .and_then(|l| list.items.iter().position(|c| c.label == l))

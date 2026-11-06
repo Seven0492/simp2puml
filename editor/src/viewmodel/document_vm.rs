@@ -7,8 +7,9 @@
 //! Zed le fait pour tout travail coûteux, afin de ne jamais bloquer l'interface.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task};
 
@@ -21,10 +22,30 @@ use crate::services::include_service::DocumentFolder;
 use crate::services::render_service::RenderService;
 use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel, LineMark};
 
-/// Délai après la dernière frappe avant de relancer le rendu.
-const RENDER_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Délai avant de relancer le moteur pendant une rafale de frappes : deux fois le dernier rendu,
+/// entre ces deux bornes.
+const MIN_RENDER_DELAY: Duration = Duration::from_millis(16);
+const MAX_RENDER_DELAY: Duration = Duration::from_millis(150);
+
+/// Une frappe isolée se rend tout de suite ; seule une frappe qui en suit une autre de près attend.
+/// `since_last_edit` : `None` à la toute première modification.
+fn render_delay(last_render: Duration, since_last_edit: Option<Duration>) -> Duration {
+    let delay = (last_render * 2).clamp(MIN_RENDER_DELAY, MAX_RENDER_DELAY);
+    if since_last_edit.is_none_or(|since| since >= delay) {
+        Duration::ZERO
+    } else {
+        delay
+    }
+}
+
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 8.0;
+
+/// Zoom sur une grille : un va-et-vient repasse par les mêmes valeurs. L'atlas de GPUI range les
+/// glyphes par taille exacte et ne les libère jamais : sans grille, chaque pas en ajouterait.
+fn snap_zoom(zoom: f32) -> f32 {
+    ((zoom * 1024.0).round() / 1024.0).clamp(MIN_ZOOM, MAX_ZOOM)
+}
 
 #[derive(Clone, Debug)]
 pub enum DocumentEvent {
@@ -98,6 +119,13 @@ pub struct DocumentViewModel {
     pub link_menu: Option<LinkMenu>,
     service: Option<Arc<RenderService>>,
     render_task: Option<Task<()>>,
+    /// Durée du dernier rendu, de la préparation du texte à la lecture du SVG.
+    last_render: Duration,
+    last_edit: Option<Instant>,
+    /// Rendu le plus récent demandé, et le tour de calcul de ce document : un rendu en attente
+    /// de son tour et devenu périmé n'est pas calculé, les frappes ne s'accumulent pas en file.
+    render_generation: Arc<AtomicU64>,
+    render_turn: Arc<Mutex<()>>,
     _editor_subscription: Subscription,
 }
 
@@ -114,7 +142,8 @@ impl DocumentViewModel {
         let editor = cx.new(|_| EditorViewModel::new(text, false, ""));
         let sub = cx.subscribe(&editor, |this, _, ev: &EditorEvent, cx| {
             if matches!(ev, EditorEvent::Changed) {
-                this.schedule_render(RENDER_DEBOUNCE, cx);
+                let since_last_edit = this.last_edit.replace(Instant::now()).map(|at| at.elapsed());
+                this.schedule_render(render_delay(this.last_render, since_last_edit), cx);
             }
         });
         let mut doc = Self {
@@ -139,6 +168,10 @@ impl DocumentViewModel {
             link_menu: None,
             service,
             render_task: None,
+            last_render: Duration::ZERO,
+            last_edit: None,
+            render_generation: Arc::default(),
+            render_turn: Arc::default(),
             _editor_subscription: sub,
         };
         doc.schedule_render(Duration::ZERO, cx);
@@ -186,6 +219,9 @@ impl DocumentViewModel {
     pub fn schedule_render(&mut self, delay: Duration, cx: &mut Context<Self>) {
         let Some(service) = self.service.clone() else { return };
         self.render_pending = true;
+        let generation = self.render_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let latest = self.render_generation.clone();
+        let turn = self.render_turn.clone();
         // remplacer la tâche annule la précédente (dernier rendu gagnant)
         self.render_task = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
@@ -200,19 +236,31 @@ impl DocumentViewModel {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    let _turn = turn.lock().unwrap_or_else(|e| e.into_inner());
+                    if latest.load(Ordering::Relaxed) != generation {
+                        return None;
+                    }
+                    let start = Instant::now();
                     // le profil s'applique ici : les deux moteurs reçoivent le même texte, sans lire de fichier
                     let folder = (profile == SecurityProfile::Folder).then(|| path.as_deref().and_then(DocumentFolder::new)).flatten();
                     let prepared = match &folder {
                         Some((source, root)) => preflight::prepare(&text, profile, Some(root), source),
                         None => preflight::prepare(&text, profile, None, &NoFiles),
                     };
-                    let mut output = service.render(&prepared.text, block)?;
-                    prepared.apply(&mut output);
-                    let scene = Scene::parse(&output.svg)?;
-                    Ok::<_, String>((output, scene))
+                    let result = service.render(&prepared.text, block).and_then(|mut output| {
+                        prepared.apply(&mut output);
+                        let scene = Scene::parse(&output.svg)?;
+                        Ok((output, scene))
+                    });
+                    Some((result, start.elapsed()))
                 })
                 .await;
-            this.update(cx, |this, cx| this.apply_render(result, version, cx)).ok();
+            let Some((result, elapsed)) = result else { return };
+            this.update(cx, |this, cx| {
+                this.last_render = elapsed;
+                this.apply_render(result, version, cx)
+            })
+            .ok();
         }));
     }
 
@@ -279,7 +327,7 @@ impl DocumentViewModel {
     /// Zoom autour d'un point de la zone d'aperçu (le point reste fixe).
     pub fn zoom_at(&mut self, factor: f32, anchor_x: f32, anchor_y: f32, cx: &mut Context<Self>) {
         let p = &mut self.preview;
-        let new_zoom = (p.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        let new_zoom = snap_zoom(p.zoom * factor);
         let k = new_zoom / p.zoom;
         p.scroll_x = (p.scroll_x + anchor_x) * k - anchor_x;
         p.scroll_y = (p.scroll_y + anchor_y) * k - anchor_y;
@@ -307,9 +355,7 @@ impl DocumentViewModel {
             return;
         }
         let pad = 32.0;
-        p.zoom = ((p.viewport_w - pad) / r.scene.width)
-            .min((p.viewport_h - pad) / r.scene.height)
-            .clamp(MIN_ZOOM, MAX_ZOOM);
+        p.zoom = snap_zoom(((p.viewport_w - pad) / r.scene.width).min((p.viewport_h - pad) / r.scene.height));
         p.scroll_x = 0.0;
         p.scroll_y = 0.0;
         cx.notify();
@@ -467,5 +513,52 @@ impl DocumentViewModel {
     pub fn highlight_link(&mut self, link: Option<usize>, cx: &mut Context<Self>) {
         self.hovered_links = link.into_iter().collect();
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zooming_back_and_forth_only_ever_uses_a_few_values() {
+        for start in [1.0_f32, 0.2, 3.0] {
+            for factor in [1.1_f32, 1.25, 1.0 / 1.1] {
+                let mut zoom = start;
+                let mut seen = std::collections::HashSet::new();
+                let mut after_two_cycles = 0;
+                for cycle in 0..40 {
+                    for _ in 0..12 {
+                        zoom = snap_zoom(zoom * factor);
+                        seen.insert(zoom.to_bits());
+                    }
+                    for _ in 0..12 {
+                        zoom = snap_zoom(zoom / factor);
+                        seen.insert(zoom.to_bits());
+                    }
+                    if cycle == 1 {
+                        after_two_cycles = seen.len();
+                    }
+                }
+                assert_eq!(seen.len(), after_two_cycles, "départ {start}, facteur {factor}");
+                assert!(seen.len() <= 3 * 13, "{} valeurs", seen.len());
+            }
+        }
+        assert_eq!(snap_zoom(1.0), 1.0);
+        assert_eq!(snap_zoom(snap_zoom(1.1) / 1.1), 1.0, "aller-retour exact depuis 100 %");
+        assert_eq!(snap_zoom(100.0), MAX_ZOOM);
+        assert_eq!(snap_zoom(0.0), MIN_ZOOM);
+    }
+
+    #[test]
+    fn the_render_delay_follows_the_last_render() {
+        let soon = Some(Duration::from_millis(1));
+        assert_eq!(render_delay(Duration::ZERO, soon), MIN_RENDER_DELAY);
+        assert_eq!(render_delay(Duration::from_millis(40), soon), Duration::from_millis(80));
+        assert_eq!(render_delay(Duration::from_secs(3), soon), MAX_RENDER_DELAY);
+        // frappe isolée : tout de suite, même sur un gros document
+        assert_eq!(render_delay(Duration::from_secs(3), None), Duration::ZERO);
+        assert_eq!(render_delay(Duration::from_secs(3), Some(MAX_RENDER_DELAY)), Duration::ZERO);
+        assert_eq!(render_delay(Duration::from_millis(40), Some(Duration::from_millis(79))), Duration::from_millis(80));
     }
 }
