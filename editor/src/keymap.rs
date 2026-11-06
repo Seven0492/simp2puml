@@ -103,6 +103,11 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("alt-pagedown", w::NextBlock, None),
         KeyBinding::new("alt-pageup", w::PrevBlock, None),
         KeyBinding::new("secondary-q", w::Quit, None),
+        // dans le texte, ces touches règlent sa taille ; ailleurs, le zoom du diagramme.
+        // Après les raccourcis globaux : à profondeur égale, le dernier déclaré l'emporte.
+        KeyBinding::new("secondary-=", w::IncreaseCodeSize, ed),
+        KeyBinding::new("secondary-+", w::IncreaseCodeSize, ed),
+        KeyBinding::new("secondary--", w::DecreaseCodeSize, ed),
     ]);
     b
 }

@@ -392,6 +392,46 @@ fn escape_closes_the_arrow_menu(cx: &mut TestAppContext) {
     assert!(doc.read_with(s.window, |d, _| d.link_menu.is_none()));
 }
 
+/// Ctrl++ et Ctrl+- agissent sur ce qui a le focus : le texte, ou le diagramme.
+#[gpui::test]
+fn zoom_keys_follow_the_focus(cx: &mut TestAppContext) {
+    let path = temp_file("focus-zoom.puml", "@startuml\nA -> B\n@enduml\n");
+    let s = open(cx, vec![path]);
+    let doc = s.window.read(|cx| s.vm.read(cx).active_document().clone());
+    let editor = s.window.read(|cx| s.vm.read(cx).active_editor(cx));
+    let zoom = |s: &Session| doc.read_with(s.window, |d, _| d.preview.zoom);
+    let code = |s: &Session| s.preferences().code_size;
+    assert_eq!((code(&s), zoom(&s)), (14, 1.0));
+
+    // le focus est dans le texte : sa taille change, jamais le diagramme
+    for (keys, expected) in [("ctrl-=", 15), ("ctrl-+", 16), ("ctrl--", 15), ("ctrl--", 14), ("ctrl--", 13)] {
+        s.window.simulate_keystrokes(keys);
+        s.window.run_until_parked();
+        assert_eq!(code(&s), expected, "{keys}");
+        assert_eq!(zoom(&s), 1.0, "{keys} : le diagramme ne bouge pas");
+    }
+    assert_eq!(editor.read_with(s.window, |e, _| e.code_size()), 13.0, "l'éditeur suit");
+    assert_eq!(preferences_service::load().0.code_size, 13, "enregistré");
+
+    // un clic dans le vide de l'aperçu y met le focus : les mêmes touches zooment le diagramme
+    let preview = s.window.debug_bounds("preview").expect("aperçu");
+    s.window.simulate_click(preview.bottom_right() - gpui::point(gpui::px(4.), gpui::px(4.)), Modifiers::none());
+    s.window.run_until_parked();
+    s.window.simulate_keystrokes("ctrl-=");
+    s.window.run_until_parked();
+    assert_eq!((code(&s), zoom(&s)), (13, 1.25));
+    s.window.simulate_keystrokes("ctrl--");
+    s.window.run_until_parked();
+    assert_eq!((code(&s), zoom(&s)), (13, 1.0));
+
+    // dans le champ de recherche aussi : ce n'est pas le texte du diagramme
+    s.window.simulate_keystrokes("ctrl-f");
+    s.window.run_until_parked();
+    s.window.simulate_keystrokes("ctrl-=");
+    s.window.run_until_parked();
+    assert_eq!((code(&s), zoom(&s)), (13, 1.25));
+}
+
 #[gpui::test]
 fn typing_continues_after_a_toolbar_click(cx: &mut TestAppContext) {
     let path = temp_file("focus.puml", "@startuml\n@enduml\n");
