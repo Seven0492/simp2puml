@@ -9,11 +9,7 @@
   Un éditeur PlantUML natif à l'aperçu vectoriel, et un convertisseur entre SIMP, PlantUML et Atelier Diagrammes.
 </p>
 
-<p align="center">
-  <a href="https://simp2puml.sethmartin.dev">Site et documentation</a> ·
-  <a href="docs/installation.md">Installation</a> ·
-  <a href="docs/editeur.md">Guide de l'éditeur</a>
-</p>
+**[Site et documentation](https://simp2puml.sethmartin.dev) · [Installation](docs/installation.md) · [Guide de l'éditeur](docs/editeur.md)**
 
 ![Le diagramme suit la frappe, chaque élément se clique, le thème sombre s'adapte](docs/images/presentation.gif)
 
