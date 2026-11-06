@@ -1,7 +1,8 @@
 ## Types partagés : diagnostics, régions cliquables, métriques de texte,
 ## construction SVG et petit analyseur lexical sans expressions régulières.
 import std/[strutils, math, tables]
-from std/unicode import Rune, runes, runeAt, runeLenAt, validateUtf8
+from std/unicode import Rune, runes, runeAt, runeLen, runeLenAt, validateUtf8
+import fontmetrics
 
 type
   Severity* = enum
@@ -168,29 +169,21 @@ proc hasErrors*(ctx: Context): bool =
 
 # ---------------------------------------------------------------- texte
 
-proc runeWidth(r: Rune): float =
+proc runeWidth(r: Rune, bold: bool): float =
+  ## Largeur réelle dans la police du diagramme, sinon une estimation.
   let c = int(r)
-  if c < 128:
-    let ch = char(c)
-    case ch
-    of 'i', 'l', 'j', '\'', '|', '.', ',', ':', ';', '!', 'I': 0.30
-    of 'f', 't', 'r', '(', ')', '[', ']', '{', '}', ' ', '"', '-': 0.38
-    of 'm', 'w', 'M', 'W': 0.88
-    of 'A'..'H', 'J'..'L', 'N'..'V', 'X'..'Z', '@', '%', '&': 0.68
-    of '0'..'9': 0.58
-    else: 0.58
-  elif c >= 0x1100 and (c <= 0x115F or (c >= 0x2E80 and c <= 0xA4CF) or
+  if c >= FirstRune and c <= LastRune:
+    return (if bold: Bold[c - FirstRune] else: Regular[c - FirstRune]).float
+  if c >= 0x1100 and (c <= 0x115F or (c >= 0x2E80 and c <= 0xA4CF) or
       (c >= 0xAC00 and c <= 0xD7A3) or (c >= 0xF900 and c <= 0xFAFF) or
       (c >= 0xFE30 and c <= 0xFE4F) or (c >= 0xFF00 and c <= 0xFF60) or
       (c >= 0x1F300 and c <= 0x1FAFF)):
-    1.0
-  else:
-    0.6
+    return 1.0
+  0.7
 
 proc plainWidth(s: string, size = FontSize, bold = false): float =
-  var w = 0.0
-  for r in s.runes: w += runeWidth(r)
-  result = w * size * (if bold: 1.1 else: 1.03)
+  for r in s.runes: result += runeWidth(r, bold)
+  result *= size
 
 proc colorValue*(s: string): string
 
@@ -305,7 +298,9 @@ proc spriteSize(r: Run, lineSize: float): (float, float) =
   (sp.width.float * k, sp.height.float * k)
 
 proc runWidth(r: Run): float =
-  if r.sprite.len > 0: spriteSize(r, r.size)[0] + 2 else: plainWidth(r.text, r.size, r.bold)
+  if r.sprite.len > 0: spriteSize(r, r.size)[0] + 2
+  elif r.mono: r.text.runeLen.float * MonoAdvance * r.size
+  else: plainWidth(r.text, r.size, r.bold)
 
 proc textWidth*(s: string, size = FontSize, bold = false): float =
   if not hasMarkup(s): return plainWidth(s, size, bold)

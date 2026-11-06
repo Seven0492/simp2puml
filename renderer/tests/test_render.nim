@@ -499,6 +499,29 @@ stop
     let r = renderPuml("@startuml\nheader H\nfooter F\ncaption C\nclass A\n@enduml\n")
     for line in [2, 3, 4]: check r.hit(line) == line
 
+suite "largeur des textes":
+  test "les vraies largeurs de la police, gras compris":
+    # relevées dans DejaVu Sans et DejaVu Sans Bold
+    check abs(textWidth("Diagramme de classes", 17, true) - 215.2) < 0.5
+    check abs(textWidth("Document", 13, true) - 74.5) < 0.5
+    check abs(textWidth("nom : String", 13) - 80.3) < 0.5
+    check abs(textWidth("WWWWWWWW", 13) - 102.8) < 0.5
+    check abs(textWidth("iiiiiiii", 13) - 28.9) < 0.5
+    check textWidth("été", 13) == textWidth("ete", 13)
+
+  test "autres écritures : une estimation, jamais zéro":
+    check textWidth("日本語", 13) == 39
+    check textWidth("▶", 13) > 0
+
+  test "le titre tient dans l'image":
+    let r = renderPuml("@startuml\ntitle Diagramme de classes\nclass A\n@enduml\n")
+    check r.width >= textWidth("Diagramme de classes", 17, true) + 20
+    let z = r.regions.filterIt(it.line == 2)[0]
+    check abs(z.w - textWidth("Diagramme de classes", 17, true)) < 0.1
+
+  test "morceau à chasse fixe":
+    check abs(textWidth("\"\"abcd\"\"", 10) - 4 * 6.02) < 0.01
+
 suite "libellés de relations":
   proc labelBoxes(r: RenderResult, count: int): seq[Region] =
     ## Les zones de libellé : une par relation, repérées par leur ligne et leur faible hauteur.

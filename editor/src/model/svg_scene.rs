@@ -174,7 +174,9 @@ impl Scene {
                         Anchor::Middle => text.x - width / 2.0,
                         Anchor::End => text.x - width,
                     };
-                    let inside = x >= zone.x - 2.0 && x <= zone.x + zone.w && text.y >= zone.y && text.y <= zone.y + zone.h;
+                    // par son centre : la zone vient d'une estimation, le texte peut la dépasser
+                    let center = x + width / 2.0;
+                    let inside = center >= zone.x && center <= zone.x + zone.w && text.y >= zone.y && text.y <= zone.y + zone.h;
                     if inside {
                         let (top, bottom) = glyph_metrics::text_extent(text, pixels_per_unit);
                         add(Bounds { x, y: baseline(text.y) - top, w: width, h: top + bottom });
@@ -669,6 +671,15 @@ mod tests {
         // « nom » n'a que des minuscules sans jambage ; c'est l'icône qui fixe le haut et le bas
         assert_eq!(content.y, 36.5, "le texte voisin n'entre pas");
         assert_eq!(content.y + content.h, 44.0, "rien sous la ligne de base : ni g ni parenthèse");
+    }
+
+    #[test]
+    fn a_text_wider_than_its_zone_is_still_its_content() {
+        // un titre gras plus large que l'estimation du moteur : la boîte suit le texte réel
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 40"><text x="150" y="24" font-size="17" text-anchor="middle" font-weight="bold">Titre</text></svg>"##;
+        let zone = Bounds { x: 50.0, y: 10.0, w: 200.0, h: 21.0 };
+        let content = Scene::parse(svg).unwrap().content_bounds(zone, &mut |_| 215.0, &mut |y| y, 1.0).unwrap();
+        assert_eq!((content.x, content.w), (42.5, 215.0));
     }
 
     #[test]
