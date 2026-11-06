@@ -1,4 +1,4 @@
-//! puml-editor : éditeur PlantUML GPUI avec aperçu vectoriel en direct.
+//! simp2puml (binaire `puml-editor`) : éditeur PlantUML GPUI avec aperçu vectoriel en direct.
 //!
 //! Architecture MVVM :
 //! - `model`     : données et règles (tampon, coloration, scène SVG…), sans GPUI ;
@@ -23,7 +23,7 @@ use viewmodel::workspace_vm::WorkspaceViewModel;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const HELP: &str = "puml-editor — éditeur PlantUML avec aperçu natif
+const HELP: &str = "simp2puml — éditeur PlantUML avec aperçu natif
 
 Usage : puml-editor [FICHIER]...
 
@@ -43,7 +43,7 @@ fn main() {
                 return;
             }
             "-V" | "--version" => {
-                println!("puml-editor {VERSION}");
+                println!("simp2puml {VERSION}");
                 return;
             }
             a if a.starts_with('-') => {
@@ -60,7 +60,8 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    app_id: Some("puml-editor".into()),
+                    // associe la fenêtre à l'entrée de menu simp2puml.desktop
+                    app_id: Some("simp2puml".into()),
                     ..Default::default()
                 },
                 |window, cx| {

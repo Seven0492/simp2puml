@@ -3,7 +3,7 @@ name = "puml-editor"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Éditeur PlantUML GPUI (MVVM) avec aperçu vectoriel en direct rendu par pumlrender (Nim)"
+description = "simp2puml : éditeur PlantUML GPUI (MVVM) avec aperçu vectoriel en direct rendu par pumlrender (Nim)"
 publish = false
 
 [[bin]]

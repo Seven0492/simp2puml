@@ -187,9 +187,9 @@ L’export SIMP reste expérimental et limité au modèle historique de classes 
 
 `--strict` refuse les approximations et pertes détectées, y compris le recalcul de mise en page signalé par les vues enrichies. Un avertissement peut concerner plusieurs éléments ; leur nombre n’est pas un décompte des éléments perdus. Vérifier la sortie dans l’outil cible avant de remplacer un document de travail.
 
-## Éditeur PlantUML (GPUI) et rendu natif (Nim)
+## Éditeur simp2puml (GPUI) et rendu natif (Nim)
 
-Le dépôt contient aussi un éditeur PlantUML de bureau, indépendant du paquet Python :
+Le dépôt contient aussi un éditeur PlantUML de bureau, déployé sous le nom **simp2puml** (titre `fichier — simp2puml 0.1.0`, entrée de menu `simp2puml`) ; son binaire est `puml-editor`. Il est indépendant du paquet Python, qu'il appelle seulement pour importer et exporter le format SIMP :
 
 - `editor/` : application Rust construite avec [GPUI](https://gpui.rs) (le cadriciel d'interface de Zed). Onglets, coloration syntaxique, autocomplétion (mots-clés selon le contexte, noms déclarés dans le document, flèches, extraits, avec correspondance approximative), numéros de ligne, annulation/rétablissement, recherche et remplacement, commentaire de lignes, duplication et déplacement de lignes, indentation automatique, modèles de diagrammes, diagnostics par ligne, et aperçu **vectoriel** en direct : le SVG produit par le moteur est dessiné directement avec les primitives GPUI (formes, chemins, texte), sans image bitmap, et reste net à tout zoom. Un clic sur un élément du diagramme place le curseur sur la ligne correspondante ; Ctrl+molette zoome autour du pointeur, la molette ou un glisser fait défiler.
 - `renderer/` : moteur `pumlrender` écrit en Nim, qui produit le SVG de l'aperçu sans Java ni PlantUML. Il couvre les diagrammes de classes, d'objets, de séquence, d'activité (nouvelle syntaxe, et ancienne syntaxe `(*)` sous forme simplifiée), d'états, de cas d'utilisation, de composants/déploiement, les cartes mentales, WBS, Gantt, JSON et YAML. Les autres types (`salt`, `timing`, `ditaa`…) restent éditables mais affichent un aperçu de remplacement avec un avertissement.
@@ -214,6 +214,18 @@ cd renderer && nimble build        # ou : nim c -o:bin/pumlrender src/pumlrender
 cd ../editor && cargo build --release
 ./target/release/puml-editor diagramme.puml
 ```
+
+Sous Linux, l'entrée de menu `editor/simp2puml.desktop` s'installe avec le binaire et le moteur placés côte à côte :
+
+```sh
+install -Dm755 editor/target/release/puml-editor ~/.local/bin/puml-editor
+install -Dm755 renderer/bin/pumlrender ~/.local/bin/pumlrender
+install -Dm644 src/simp2puml/assets/icon-256.png ~/.local/share/icons/hicolor/256x256/apps/simp2puml.png
+install -Dm644 editor/simp2puml.desktop ~/.local/share/applications/simp2puml.desktop
+update-desktop-database ~/.local/share/applications
+```
+
+`simp2puml-linux.sh` installe l'interface Tkinter sous le même nom de fichier d'entrée de menu : le dernier installé remplace l'autre.
 
 L'éditeur cherche `pumlrender` dans `$PUMLRENDER`, à côté de l'exécutable ou dans `renderer/bin/` d'un dossier parent (dépôt), puis dans les entrées absolues du `PATH`. Le moteur s'utilise aussi seul : `pumlrender diagramme.puml -o diagramme.svg` (une sortie existante, même un lien symbolique, est refusée), `pumlrender --check diagramme.puml` pour les seuls diagnostics. `--serve` est le mode persistant utilisé par l'éditeur.
 

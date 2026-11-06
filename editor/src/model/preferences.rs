@@ -104,7 +104,7 @@ impl Preferences {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# Préférences de l'éditeur PlantUML (puml-editor)\n\
+            "# Préférences de l'éditeur simp2puml\n\
              # theme : system, light ou dark\n\
              theme = {}\n\
              # en thème sombre, adapter les couleurs du diagramme (sinon feuille claire)\n\

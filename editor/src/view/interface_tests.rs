@@ -168,13 +168,13 @@ fn window_title_follows_typing_and_saving(cx: &mut TestAppContext) {
     let path = temp_file("titre.puml", "@startuml\nA -> B\n@enduml\n");
     let s = open(cx, vec![path.clone()]);
     assert_eq!(s.tabs(), 1, "l'onglet de départ est remplacé par le fichier");
-    assert_eq!(s.window.window_title().as_deref(), Some("titre.puml — Éditeur PlantUML"));
+    assert_eq!(s.window.window_title().as_deref(), Some("titre.puml — simp2puml 0.1.0"));
     s.window.simulate_input("x");
     s.window.run_until_parked();
-    assert_eq!(s.window.window_title().as_deref(), Some("• titre.puml — Éditeur PlantUML"), "le point suit la frappe");
+    assert_eq!(s.window.window_title().as_deref(), Some("• titre.puml — simp2puml 0.1.0"), "le point suit la frappe");
     s.window.simulate_keystrokes("ctrl-s");
     s.window.run_until_parked();
-    assert_eq!(s.window.window_title().as_deref(), Some("titre.puml — Éditeur PlantUML"));
+    assert_eq!(s.window.window_title().as_deref(), Some("titre.puml — simp2puml 0.1.0"));
     assert!(std::fs::read_to_string(&path).unwrap().starts_with('x'));
     assert_eq!(s.status(), "Enregistré : titre.puml");
 }

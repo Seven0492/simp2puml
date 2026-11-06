@@ -180,7 +180,8 @@ impl WorkspaceViewModel {
     pub fn window_title(&self, cx: &App) -> String {
         let doc = self.active_document().read(cx);
         let dirty = if doc.editor.read(cx).buffer.is_dirty() { "• " } else { "" };
-        format!("{dirty}{} — Éditeur PlantUML", doc.display_name())
+        // même titre que l'interface d'origine de simp2puml : « fichier — simp2puml 0.1.0 »
+        format!("{dirty}{} — simp2puml {}", doc.display_name(), env!("CARGO_PKG_VERSION"))
     }
 
     fn set_status(&mut self, message: impl Into<String>, is_error: bool, cx: &mut Context<Self>) {
@@ -708,6 +709,13 @@ fn same_file_key(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le titre affiche cette version : elle suit celle du paquet simp2puml.
+    #[test]
+    fn version_matches_the_simp2puml_package() {
+        let init = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/simp2puml/__init__.py")).unwrap();
+        assert!(init.contains(&format!("__version__ = \"{}\"", env!("CARGO_PKG_VERSION"))));
+    }
 
     #[test]
     fn missing_output_extension_is_completed_and_flagged() {
