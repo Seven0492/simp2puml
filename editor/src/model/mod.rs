@@ -6,6 +6,7 @@ pub mod diagram;
 pub mod glyph_metrics;
 pub mod preferences;
 pub mod preflight;
+pub mod source_location;
 pub mod svg_scene;
 pub mod syntax;
 pub mod templates;

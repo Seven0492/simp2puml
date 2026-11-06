@@ -437,7 +437,13 @@ impl EditorViewModel {
         let text = self.buffer.line_text(l);
         let indent = text.len() - text.trim_start().len();
         let start = self.buffer.line_start(l);
-        self.buffer.set_cursor(start + indent);
+        self.go_to_range(start + indent..start + indent, cx);
+    }
+
+    /// Curseur ou sélection à cet endroit précis, centré à l'écran s'il n'est pas visible.
+    pub fn go_to_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.buffer.select_range(range.clone());
+        let l = self.buffer.line_of(range.start.min(self.buffer.len()));
         // centrer la ligne seulement si elle est hors de la zone visible
         let line_height = self.line_height();
         let y = l as f32 * line_height;

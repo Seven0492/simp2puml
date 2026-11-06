@@ -187,6 +187,23 @@ impl Scene {
         content
     }
 
+    /// Texte sous un point (coordonnées du SVG) : le dernier dessiné, et son bord gauche.
+    pub fn text_at(&self, x: f32, y: f32, text_width: &mut dyn FnMut(&Text) -> f32) -> Option<(&Text, f32)> {
+        self.items.iter().rev().find_map(|item| {
+            let Item::Text { text, .. } = item else { return None };
+            if y < text.y - text.size || y > text.y + 0.35 * text.size {
+                return None;
+            }
+            let width = text_width(text);
+            let left = match text.anchor {
+                Anchor::Start => text.x,
+                Anchor::Middle => text.x - width / 2.0,
+                Anchor::End => text.x - width,
+            };
+            (x >= left - 1.0 && x <= left + width + 1.0).then_some((text, left))
+        })
+    }
+
     pub fn parse(svg: &str) -> Result<Scene, String> {
         let opts = ParsingOptions { allow_dtd: false, ..ParsingOptions::default() };
         let doc = Document::parse_with_options(svg, opts).map_err(|e| format!("SVG illisible : {e}"))?;
@@ -671,6 +688,16 @@ mod tests {
         // « nom » n'a que des minuscules sans jambage ; c'est l'icône qui fixe le haut et le bas
         assert_eq!(content.y, 36.5, "le texte voisin n'entre pas");
         assert_eq!(content.y + content.h, 44.0, "rien sous la ligne de base : ni g ni parenthèse");
+    }
+
+    #[test]
+    fn the_text_under_a_point_is_found() {
+        let scene = member_scene();
+        let (text, left) = scene.text_at(40.0, 41.0, &mut |t| t.content.len() as f32 * 8.0).unwrap();
+        assert_eq!((text.content.as_str(), left), ("nom", 32.0));
+        assert_eq!(scene.text_at(40.0, 57.0, &mut |t| t.content.len() as f32 * 8.0).unwrap().0.content, "autre");
+        assert!(scene.text_at(150.0, 41.0, &mut |t| t.content.len() as f32 * 8.0).is_none(), "à droite du texte");
+        assert!(scene.text_at(40.0, 25.0, &mut |t| t.content.len() as f32 * 8.0).is_none(), "au-dessus");
     }
 
     #[test]

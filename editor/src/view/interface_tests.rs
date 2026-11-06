@@ -449,6 +449,161 @@ fn zoom_keys_follow_the_focus(cx: &mut TestAppContext) {
     assert_eq!((code(&s), zoom(&s)), (13, 1.25));
 }
 
+/// Vrai Ctrl+clic, à un point du SVG ; rend le texte sélectionné et la position du curseur.
+fn ctrl_click(s: &mut Session, sx: f32, sy: f32) -> (String, (usize, usize)) {
+    s.window.run_until_parked();
+    let doc = s.window.read(|cx| s.vm.read(cx).active_document().clone());
+    let preview = s.window.debug_bounds("preview").expect("aperçu");
+    let (ox, oy, z) = doc.read_with(s.window, |d, _| {
+        let (ox, oy) = d.scene_origin();
+        (ox, oy, d.preview.zoom)
+    });
+    let at = gpui::point(preview.left() + gpui::px(ox + sx * z), preview.top() + gpui::px(oy + sy * z));
+    s.window.simulate_click(at, Modifiers::secondary_key());
+    s.window.run_until_parked();
+    s.window.read(|cx| {
+        let e = s.vm.read(cx).active_editor(cx);
+        let e = e.read(cx);
+        (e.buffer.selected_text().to_string(), e.cursor_line_col())
+    })
+}
+
+fn text_item(s: &Session, content: &str) -> (f32, f32) {
+    s.window.read(|cx| {
+        let doc = s.vm.read(cx).active_document().read(cx);
+        let scene = doc.rendering.as_ref().expect("rendu").scene.clone();
+        scene
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::model::svg_scene::Item::Text { text, .. } if text.content == content => Some((text.x, text.y - 3.0)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("texte absent : {content}"))
+    })
+}
+
+fn link_middle(s: &Session, line: usize) -> (f32, f32) {
+    s.window.read(|cx| {
+        let doc = s.vm.read(cx).active_document().read(cx);
+        let link = doc.output().expect("rendu").links.iter().find(|l| l.line == line).expect("flèche");
+        let (a, b) = (link.points[0], link.points[link.points.len() - 1]);
+        ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)
+    })
+}
+
+#[gpui::test]
+fn ctrl_click_goes_to_the_exact_place_in_the_source(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let source = "@startuml\nclass A {\n  - titre : String\n}\nclass B\nA \"1\" o-- \"0..*\" B\nA ..|> B : réalise\nnote right of B\n  ligne de note\nend note\n@enduml\n";
+    let mut s = open(cx, vec![temp_file("exact.puml", source)]);
+
+    // un attribut : le curseur sur le texte cliqué, à sa colonne ; pas au début de la ligne
+    let (x, y) = text_item(&s, "titre : String");
+    let (selected, (line, column)) = ctrl_click(&mut s, x + 1.0, y);
+    assert_eq!((selected.as_str(), line), ("", 3));
+    assert_eq!(column, 5, "début de « titre », après « - »");
+
+    // plus loin dans le texte : plus loin dans la ligne
+    let (_, (line, column)) = ctrl_click(&mut s, x + 60.0, y);
+    assert_eq!(line, 3);
+    assert!(column > 9, "colonne {column}");
+
+    // une flèche, au milieu de son tracé : son jeton sélectionné
+    let (a, b) = link_middle(&s, 6);
+    assert_eq!(ctrl_click(&mut s, a, b).0, "o--");
+
+    // le libellé de la flèche : le caractère, pas le jeton
+    // (centré : le clic au milieu du mot tombe au milieu de « réalise », colonnes 12 à 19)
+    let (a, b) = text_item(&s, "réalise");
+    let (selected, (line, column)) = ctrl_click(&mut s, a, b);
+    assert_eq!((selected.as_str(), line), ("", 7));
+    assert!(column > 12 && column < 19, "colonne {column}");
+
+    // le corps d'une note, sur une autre ligne que sa déclaration
+    let (a, b) = text_item(&s, "ligne de note");
+    assert_eq!(ctrl_click(&mut s, a + 1.0, b).1.0, 9);
+
+    // le clic simple reste la ligne, sans sélection
+    let doc = s.window.read(|cx| s.vm.read(cx).active_document().clone());
+    let (a, b) = link_middle(&s, 6);
+    let (screen_x, screen_y) = doc.read_with(s.window, |d, _| {
+        let (ox, oy) = d.scene_origin();
+        (ox + a * d.preview.zoom, oy + b * d.preview.zoom)
+    });
+    doc.update(s.window, |d, cx| d.click_preview(screen_x, screen_y, cx));
+    s.window.run_until_parked();
+    let selected = s.window.read(|cx| s.vm.read(cx).active_editor(cx).read(cx).buffer.selected_text().to_string());
+    assert_eq!((selected.as_str(), cursor_line(&s)), ("", 6));
+}
+
+#[gpui::test]
+fn ctrl_click_places_the_cursor_on_the_nearest_edge_of_a_character(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let mut s = open(cx, vec![temp_file("bords.puml", "@startuml\nclass A {\n  WWW\n}\n@enduml\n")]);
+    let (x, y) = text_item(&s, "WWW");
+    // balaye le texte (colonnes 3 à 6) et note où le curseur change de bord : ces changements
+    // tombent au milieu de chaque W, donc à une largeur de W l'un de l'autre, le dernier compris.
+    let mut changes = Vec::new();
+    let mut offset = 0.0;
+    while changes.len() < 3 && offset < 60.0 {
+        let (line, column) = ctrl_click(&mut s, x + offset, y).1;
+        assert_eq!(line, 3);
+        if column == 4 + changes.len() {
+            changes.push(offset);
+        }
+        offset += 0.25;
+    }
+    let [first, second, last] = changes[..] else { panic!("bords traversés : {changes:?}") };
+    let width = second - first;
+    assert!(width > 1.0, "largeur d'un W : {width}");
+    assert!((first - width / 2.0).abs() <= 0.5, "1er W : milieu à {first}, largeur {width}");
+    assert!((last - second - width).abs() <= 0.5, "dernier W : {last} après {second}, largeur {width}");
+}
+
+#[gpui::test]
+fn clicking_in_the_text_also_chooses_the_nearest_edge(cx: &mut TestAppContext) {
+    let s = open(cx, vec![temp_file("bords-texte.puml", "WWW\n")]);
+    s.window.run_until_parked();
+    let editor = s.window.debug_bounds("editor").expect("éditeur");
+    let y = editor.top() + gpui::px(5.0);
+    let mut changes = Vec::new();
+    let mut offset = 0.0;
+    while changes.len() < 3 && offset < 200.0 {
+        s.window.simulate_click(gpui::point(editor.left() + gpui::px(offset), y), Modifiers::none());
+        s.window.run_until_parked();
+        let (line, column) = s.window.read(|cx| s.vm.read(cx).active_editor(cx).read(cx).cursor_line_col());
+        assert_eq!(line, 1);
+        if column == 2 + changes.len() {
+            changes.push(offset);
+        }
+        offset += 0.25;
+    }
+    let [first, second, last] = changes[..] else { panic!("bords traversés : {changes:?}") };
+    assert!((last - second - (second - first)).abs() <= 0.5, "milieux des W : {changes:?}");
+}
+
+#[gpui::test]
+fn ctrl_click_on_overlapping_arrows_keeps_the_exact_target(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let path = temp_file("croise-exact.puml", "@startuml\nA --> B : premier\nC ..|> D : second\nE --> F\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    let (doc, crossing, _) = crossing_arrows(&mut s);
+    doc.update(s.window, |d, cx| d.click_precise(crossing.0, crossing.1, None, cx));
+    s.click("link-choice-3");
+    let selected = s.window.read(|cx| s.vm.read(cx).active_editor(cx).read(cx).buffer.selected_text().to_string());
+    assert_eq!(selected, "..|>");
+}
+
 #[gpui::test]
 fn typing_continues_after_a_toolbar_click(cx: &mut TestAppContext) {
     let path = temp_file("focus.puml", "@startuml\n@enduml\n");

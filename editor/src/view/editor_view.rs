@@ -20,6 +20,7 @@ use super::actions::*;
 use super::completion_menu::completion_menu;
 use super::theme;
 use crate::model::diagram::Severity;
+use crate::model::source_location;
 use crate::model::syntax::Token;
 use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel, Motion};
 
@@ -72,10 +73,13 @@ impl EditorView {
         if line >= buffer.line_count() {
             return buffer.len();
         }
-        let x = f32::from(pos.x - bounds.left()) - self.layout.text_x + vm.scroll_x;
+        let x = (f32::from(pos.x - bounds.left()) - self.layout.text_x + vm.scroll_x).max(0.0);
         let start = buffer.line_start(line);
         match self.layout.lines.iter().find(|(l, _)| *l == line) {
-            Some((_, shaped)) => start + shaped.closest_index_for_x(px(x.max(0.0))),
+            Some((_, shaped)) => {
+                let closest = shaped.closest_index_for_x(px(x));
+                start + source_location::nearest_edge(buffer.line_text(line), x, closest, &|i| f32::from(shaped.x_for_index(i)))
+            }
             None => start,
         }
     }
@@ -427,6 +431,7 @@ impl Render for EditorView {
             (vm.single_line, vm.completions.is_some())
         };
         let el = div()
+            .debug_selector(|| "editor".to_string())
             .id("editor")
             .key_context({
                 let mut context = gpui::KeyContext::new_with_defaults();

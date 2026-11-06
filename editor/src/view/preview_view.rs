@@ -19,6 +19,7 @@ use std::ops::Range;
 
 use super::components::{button, hint};
 use super::theme;
+use crate::model::source_location;
 use crate::model::svg_scene::{self, Anchor, Color, Geometry, Item, PathCmd, Scene, Style as Paint, Text};
 use crate::viewmodel::document_vm::{DocumentViewModel, LinkMenu};
 
@@ -65,10 +66,32 @@ impl PreviewView {
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
         let (x, y) = self.local(ev.position);
-        let on_element = self.document.update(cx, |d, cx| d.click_preview(x, y, cx));
+        let on_element = if ev.modifiers.secondary() {
+            let shown = self.text_under(x, y, window, cx);
+            self.document.update(cx, |d, cx| d.click_precise(x, y, shown.as_ref().map(|(s, i)| (s.as_str(), *i)), cx))
+        } else {
+            self.document.update(cx, |d, cx| d.click_preview(x, y, cx))
+        };
         if !on_element {
             self.drag_from = Some(ev.position);
         }
+    }
+
+    /// Texte affiché sous le pointeur et indice du caractère visé, mesurés avec la vraie police.
+    fn text_under(&self, x: f32, y: f32, window: &mut Window, cx: &App) -> Option<(String, usize)> {
+        let doc = self.document.read(cx);
+        let scene = doc.rendering.as_ref()?.scene.clone();
+        let (sx, sy) = doc.screen_to_scene(x, y);
+        let t = Transform { origin: point(px(0.), px(0.)), zoom: doc.preview.zoom };
+        let (text, left) = scene.text_at(sx, sy, &mut |text| measured_width(text, t, window))?;
+        let index = if text.size * t.zoom < MIN_TEXT_PIXELS {
+            0
+        } else {
+            let shaped = shape_text(text, t, window);
+            let x = (sx - left) * t.zoom;
+            source_location::nearest_edge(&text.content, x, shaped.closest_index_for_x(px(x)), &|i| f32::from(shaped.x_for_index(i)))
+        };
+        Some((text.content.clone(), index))
     }
 
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {

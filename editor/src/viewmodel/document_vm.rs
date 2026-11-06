@@ -15,6 +15,7 @@ use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task};
 use crate::model::diagram::{Hit, RenderOutput, Severity};
 use crate::model::preferences::SecurityProfile;
 use crate::model::preflight::{self, NoFiles};
+use crate::model::source_location;
 use crate::model::svg_scene::Scene;
 use crate::services::include_service::DocumentFolder;
 use crate::services::render_service::RenderService;
@@ -31,6 +32,8 @@ pub enum DocumentEvent {
     Rendered,
     /// L'utilisateur a cliqué un élément de l'aperçu : aller à cette ligne (1-based).
     JumpToLine(usize),
+    /// Ctrl+clic : aller à cet endroit précis du texte (une sélection pour une flèche).
+    JumpToRange(std::ops::Range<usize>),
 }
 
 /// Résultat affichable d'un rendu.
@@ -69,7 +72,13 @@ pub struct LinkMenu {
     pub x: f32,
     pub y: f32,
     pub choices: Vec<LinkChoice>,
+    /// Ouvert par un Ctrl+clic : le choix mène au jeton de la flèche, pas à la ligne.
+    pub precise: bool,
 }
+
+/// Lignes parcourues après celle de l'élément pour retrouver un texte : le corps d'une note
+/// suit sa déclaration, sans que le moteur note sa ligne.
+const TEXT_SEARCH_LINES: usize = 60;
 
 pub struct DocumentViewModel {
     pub editor: Entity<EditorViewModel>,
@@ -354,6 +363,37 @@ impl DocumentViewModel {
 
     /// Clic dans l'aperçu ; vrai s'il a servi (sinon il peut commencer un glisser).
     pub fn click_preview(&mut self, x: f32, y: f32, cx: &mut Context<Self>) -> bool {
+        self.click(x, y, false, None, cx)
+    }
+
+    /// Ctrl+clic : l'endroit exact. `text` : le texte affiché sous le pointeur, avec l'indice
+    /// (en octets) du caractère visé.
+    pub fn click_precise(&mut self, x: f32, y: f32, text: Option<(&str, usize)>, cx: &mut Context<Self>) -> bool {
+        self.click(x, y, true, text, cx)
+    }
+
+    /// Texte affiché dans la ligne de l'élément ou les suivantes : le texte entier, puis le mot visé.
+    fn locate_shown(&self, line: usize, shown: &str, index: usize, cx: &Context<Self>) -> Option<usize> {
+        let buffer = &self.editor.read(cx).buffer;
+        let first = line.saturating_sub(1);
+        let lines = first..(first + TEXT_SEARCH_LINES).min(buffer.line_count());
+        let search = |find: fn(&str, &str, usize) -> Option<usize>| {
+            lines.clone().find_map(|l| find(buffer.line_text(l), shown, index).map(|col| buffer.line_start(l) + col))
+        };
+        search(source_location::locate_text).or_else(|| search(source_location::locate_word))
+    }
+
+    /// Le jeton de la flèche de cette ligne ; sa ligne seule si elle n'en a pas (activité, carte).
+    fn jump_to_arrow(&self, line: usize, cx: &mut Context<Self>) {
+        let target = {
+            let buffer = &self.editor.read(cx).buffer;
+            let start = buffer.line_start(line.saturating_sub(1));
+            source_location::arrow_token(buffer.line_text(line.saturating_sub(1))).map(|r| start + r.start..start + r.end)
+        };
+        cx.emit(target.map_or(DocumentEvent::JumpToLine(line), DocumentEvent::JumpToRange));
+    }
+
+    fn click(&mut self, x: f32, y: f32, precise: bool, text: Option<(&str, usize)>, cx: &mut Context<Self>) -> bool {
         // un menu ouvert se referme au premier clic à côté, qui ne fait rien d'autre
         if self.link_menu.take().is_some() {
             self.hovered_links.clear();
@@ -383,23 +423,37 @@ impl DocumentViewModel {
                             LinkChoice { link, line, label }
                         })
                         .collect();
-                    self.link_menu = Some(LinkMenu { x, y, choices });
+                    self.link_menu = Some(LinkMenu { x, y, choices, precise });
                     cx.notify();
+                    return true;
+                }
+                if precise {
+                    self.jump_to_arrow(lines[0].1, cx);
                     return true;
                 }
                 lines[0].1
             }
         };
-        if line > 0 {
-            cx.emit(DocumentEvent::JumpToLine(line));
+        if line == 0 {
+            return true;
+        }
+        let exact = text.filter(|_| precise).and_then(|(shown, index)| self.locate_shown(line, shown, index, cx));
+        match exact {
+            Some(offset) => cx.emit(DocumentEvent::JumpToRange(offset..offset)),
+            None => cx.emit(DocumentEvent::JumpToLine(line)),
         }
         true
     }
 
     /// Entrée du menu : aller à cette flèche.
     pub fn choose_link(&mut self, line: usize, cx: &mut Context<Self>) {
+        let precise = self.link_menu.as_ref().is_some_and(|m| m.precise);
         self.dismiss_link_menu(cx);
-        cx.emit(DocumentEvent::JumpToLine(line));
+        if precise {
+            self.jump_to_arrow(line, cx);
+        } else {
+            cx.emit(DocumentEvent::JumpToLine(line));
+        }
     }
 
     pub fn dismiss_link_menu(&mut self, cx: &mut Context<Self>) {

@@ -108,12 +108,14 @@ impl WorkspaceView {
         let id = doc.entity_id();
         self.document_subscriptions.entry(id).or_insert_with(|| {
             cx.subscribe_in(doc, window, |this, doc, ev: &DocumentEvent, window, cx| {
-                if let DocumentEvent::JumpToLine(line) = ev {
-                    let editor = doc.read(cx).editor.clone();
-                    editor.update(cx, |e, cx| e.go_to_line(line - 1, cx));
-                    let view = this.editor_view(&editor, window, cx);
-                    window.focus(&view.focus_handle(cx));
+                let editor = doc.read(cx).editor.clone();
+                match ev {
+                    DocumentEvent::JumpToLine(line) => editor.update(cx, |e, cx| e.go_to_line(line - 1, cx)),
+                    DocumentEvent::JumpToRange(range) => editor.update(cx, |e, cx| e.go_to_range(range.clone(), cx)),
+                    DocumentEvent::Rendered => return,
                 }
+                let view = this.editor_view(&editor, window, cx);
+                window.focus(&view.focus_handle(cx));
             })
         });
         self.previews.entry(id).or_insert_with(|| cx.new(|cx| PreviewView::new(doc.clone(), cx))).clone()
