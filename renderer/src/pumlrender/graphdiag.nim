@@ -509,6 +509,7 @@ proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int]
       bodyOf = idx
     else:
       e.isContainer = true
+      if scope.len >= MaxNesting: tooDeep(line)
       scope.add idx
   true
 
@@ -926,6 +927,15 @@ proc shapeBox(e: Entity): (float, float, float, float) =
 proc clip(e: Entity, fromP, toP: (float, float)): (float, float) =
   ## Point d'intersection du segment toP → fromP (fromP intérieur) avec le bord.
   let (bx, by, bw, bh) = e.shapeBox
+  # arête décalée (parallèle à une autre) : suivre son propre trait, sinon les
+  # deux arêtes convergeraient vers le centre de la boîte
+  let inside = fromP[0] > bx and fromP[0] < bx + bw and fromP[1] > by and fromP[1] < by + bh
+  if inside and not e.isRound and e.shape notin {shChoice, shDiamond}:
+    let (ux, uy) = (toP[0] - fromP[0], toP[1] - fromP[1])
+    let tx = if ux > 1e-6: (bx + bw - fromP[0]) / ux elif ux < -1e-6: (bx - fromP[0]) / ux else: Inf
+    let ty = if uy > 1e-6: (by + bh - fromP[1]) / uy elif uy < -1e-6: (by - fromP[1]) / uy else: Inf
+    let t = min(tx, ty)
+    if t != Inf: return (fromP[0] + ux * t, fromP[1] + uy * t)
   let cx = bx + bw / 2
   let cy = by + bh / 2
   var dx = toP[0] - cx
@@ -942,7 +952,6 @@ proc clip(e: Entity, fromP, toP: (float, float)): (float, float) =
   let tx = if abs(dx) > 1e-6: (bw / 2) / abs(dx) else: Inf
   let ty = if abs(dy) > 1e-6: (bh / 2) / abs(dy) else: Inf
   let t = min(tx, ty)
-  discard fromP
   (cx + dx * t, cy + dy * t)
 
 proc visIcon(svg: var Svg, x, y: float, vis: string, isMethod: bool) =
@@ -979,14 +988,15 @@ proc drawEntity(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
   let (x, y, w, h) = (e.x, e.y, e.w, e.h)
   let st = g.stereoText(e)
   ctx.region(e.line, x, y, w, h)
-  proc header(svg: var Svg, top: float, bold = true, italic = false, underline = false) =
+  proc header(svg: var Svg, top: float, bold = true, italic = false, underline = false, center = -1.0) =
+    let c = if center >= 0: center else: x + w / 2
     var yy = top
     if st.len > 0:
-      svg.text(x + w / 2, yy + 11, st, "middle", 11, italic = true, fill = Muted)
+      svg.text(c, yy + 11, st, "middle", 11, italic = true, fill = Muted)
       yy += 14
     let lines = e.labelLines
     for i, l in lines:
-      svg.text(x + w / 2, yy + 13 + float(i) * LineHeight, l, "middle", FontSize, bold, italic, Ink, underline)
+      svg.text(c, yy + 13 + float(i) * LineHeight, l, "middle", FontSize, bold, italic, Ink, underline)
   case e.shape
   of shClass, shObject, shMap:
     svg.rect(x, y, w, h, fill, Stroke, 3)
@@ -1125,13 +1135,13 @@ proc drawEntity(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
     let bg = if cont and e.color.len == 0: FrameFill else: fill
     case e.shape
     of shPackage, shFolder:
-      let tabW = min(w * 0.6, g.headerSize(e)[0] + 24)
+      let tabW = if cont: min(w - 8, g.headerSize(e)[0] + 24) else: min(w * 0.6, g.headerSize(e)[0] + 24)
       let tabH = if cont: hh + 8 else: 12.0
       if cont:
         svg.path("M" & fmtF(x) & " " & fmtF(y + tabH) & " V" & fmtF(y) & " H" & fmtF(x + tabW) &
           " L" & fmtF(x + tabW + 8) & " " & fmtF(y + tabH), bg)
         svg.rect(x, y + tabH, w, h - tabH, bg, Stroke)
-        header(svg, y + 4)
+        header(svg, y + 4, center = x + tabW / 2)
       else:
         svg.rect(x, y, tabW, tabH, bg, Stroke)
         svg.rect(x, y + tabH, w, h - tabH, bg, Stroke)
@@ -1191,7 +1201,7 @@ proc drawEntity(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
       svg.rect(ix, y + 6, 15, 17, bg)
       svg.rect(ix - 4, y + 9, 8, 4, bg)
       svg.rect(ix - 4, y + 16, 8, 4, bg)
-      header(svg, if cont: titleTop else: y + (h - hh) / 2)
+      header(svg, if cont: titleTop else: y + (h - hh) / 2, center = x + (w - 22) / 2)
     else:
       svg.rect(x, y, w, h, bg, Stroke, 2)
       header(svg, if cont: titleTop else: y + (h - hh) / 2)
@@ -1348,24 +1358,8 @@ proc avoidObstacles(g: var GraphDiagram) =
           if c1 != c2: g.tryPath(@[c1, c2], best, bestLen)
     if best.len > 0: g.rels[ri].points = best
 
-proc renderGraph*(g: var GraphDiagram, ctx: Context): (Svg, float, float) =
+proc paintAll(g: var GraphDiagram, ctx: Context): Svg =
   var svg: Svg
-  if g.entities.len == 0:
-    return (svg, 0.0, 0.0)
-  var edgeIdx = newSeq[(int, int)](g.rels.len)
-  for i in 0 ..< edgeIdx.len: edgeIdx[i] = (-2, -1)
-  let (w, h) = g.layoutLevel(-1, edgeIdx)
-  let margin = 20.0
-  g.placeAbs(-1, margin, margin)
-  # points relatifs → absolus
-  for ri in 0 ..< g.rels.len:
-    let lvl = edgeIdx[ri][0]
-    if lvl == -2: continue
-    let (ox, oy) = g.levelOrigin(lvl)
-    let o = if lvl == -1: (margin, margin) else: (ox, oy)
-    for k in 0 ..< g.rels[ri].points.len:
-      g.rels[ri].points[k] = (g.rels[ri].points[k][0] + o[0], g.rels[ri].points[k][1] + o[1])
-  g.avoidObstacles()
   # conteneurs d'abord (du plus externe au plus interne), puis entités
   proc depth(g: GraphDiagram, i: int): int =
     var cur = g.entities[i].parent
@@ -1378,7 +1372,6 @@ proc renderGraph*(g: var GraphDiagram, ctx: Context): (Svg, float, float) =
   conts.sort()
   for (_, i) in conts: g.drawEntity(svg, g.entities[i], ctx)
   var labels: Svg
-  let regionStart = ctx.regions.len
   var pairCount = initTable[(int, int), int]()
   var pairSeen = initTable[(int, int), int]()
   for r in g.rels:
@@ -1403,6 +1396,45 @@ proc renderGraph*(g: var GraphDiagram, ctx: Context): (Svg, float, float) =
     if not e.isContainer: g.drawEntity(svg, e, ctx)
   # libellés après les boîtes pour rester lisibles
   svg.body.add labels.body
+  svg
+
+proc renderGraph*(g: var GraphDiagram, ctx: Context): (Svg, float, float) =
+  if g.entities.len == 0:
+    var empty: Svg
+    return (empty, 0.0, 0.0)
+  var edgeIdx = newSeq[(int, int)](g.rels.len)
+  for i in 0 ..< edgeIdx.len: edgeIdx[i] = (-2, -1)
+  let (w, h) = g.layoutLevel(-1, edgeIdx)
+  let margin = 20.0
+  g.placeAbs(-1, margin, margin)
+  # points relatifs → absolus
+  for ri in 0 ..< g.rels.len:
+    let lvl = edgeIdx[ri][0]
+    if lvl == -2: continue
+    let (ox, oy) = g.levelOrigin(lvl)
+    let o = if lvl == -1: (margin, margin) else: (ox, oy)
+    for k in 0 ..< g.rels[ri].points.len:
+      g.rels[ri].points[k] = (g.rels[ri].points[k][0] + o[0], g.rels[ri].points[k][1] + o[1])
+  g.avoidObstacles()
+  let regionStart = ctx.regions.len
+  var svg = g.paintAll(ctx)
+  # un libellé d'arête placé à côté de son trait peut sortir à gauche ou en haut :
+  # tout décaler plutôt que de le laisser coupé par le cadre de l'image
+  var minX, minY = Inf
+  for i in regionStart ..< ctx.regions.len:
+    minX = min(minX, ctx.regions[i].x)
+    minY = min(minY, ctx.regions[i].y)
+  let shiftX = if minX < margin / 2: margin / 2 - minX else: 0.0
+  let shiftY = if minY < margin / 2: margin / 2 - minY else: 0.0
+  if shiftX > 0 or shiftY > 0:
+    for e in g.entities:
+      e.x += shiftX
+      e.y += shiftY
+    for ri in 0 ..< g.rels.len:
+      for k in 0 ..< g.rels[ri].points.len:
+        g.rels[ri].points[k] = (g.rels[ri].points[k][0] + shiftX, g.rels[ri].points[k][1] + shiftY)
+    ctx.regions.setLen(regionStart)
+    svg = g.paintAll(ctx)
   var maxX = w + 2 * margin
   var maxY = h + 2 * margin
   for e in g.entities:

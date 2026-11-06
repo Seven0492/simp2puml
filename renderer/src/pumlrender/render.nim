@@ -48,6 +48,9 @@ proc renderPuml*(text: string, blockIndex = 0): RenderResult =
       (inner, w, h) = placeholder(ctx, "@start" & doc.tag, "Aperçu natif non disponible pour ce type")
     of dkEmpty:
       (inner, w, h) = placeholder(ctx, "Diagramme vide", "Ajoutez des éléments entre @startuml et @enduml")
+  except TooComplex as e:
+    ctx.error(e.line, e.msg)
+    (inner, w, h) = placeholder(ctx, "Diagramme trop imbriqué", e.msg)
   except Exception as e:
     # Exception couvre aussi les Defect (index, débordement) : un défaut du
     # moteur devient un diagnostic au lieu de tuer le processus de l'éditeur

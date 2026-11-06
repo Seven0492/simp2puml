@@ -56,6 +56,7 @@ proc parseTree(doc: Doc, ctx: Context): seq[TNode] =
     let n = TNode(text: unescapeLabel(rest), line: l.num, depth: d, boxless: boxless, color: color,
       left: (marker == '-') or leftSide)
     while stack.len > 0 and stack[^1].depth >= d: discard stack.pop()
+    if stack.len >= MaxNesting: tooDeep(l.num)
     if stack.len == 0:
       if d != 1 and result.len == 0: ctx.warn(l.num, "la racine devrait être au niveau 1")
       result.add n

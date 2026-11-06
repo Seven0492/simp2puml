@@ -50,6 +50,19 @@ const
   Muted* = "#6B7280"
   FrameFill* = "#FBFBFD"
 
+  ## Au-delà, le rendu s'arrête avec un diagnostic : les passes de mise en page
+  ## sont récursives et une pile épuisée tuerait le processus sans message.
+  MaxNesting* = 200
+
+type TooComplex* = object of CatchableError
+  ## Diagramme refusé : la ligne fautive accompagne le message.
+  line*: int
+
+proc tooDeep*(line: int) {.noreturn.} =
+  var e = newException(TooComplex, "imbrication trop profonde (maximum : " & $MaxNesting & " niveaux)")
+  e.line = line
+  raise e
+
 proc newContext*(): Context = Context()
 
 proc error*(ctx: Context, line: int, msg: string) =

@@ -45,6 +45,9 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
     line: int
   var stack: seq[Frame] = @[Frame(node: nil, cur: root)]
   template cur(): ANode = stack[^1].cur
+  proc push(f: Frame) =
+    if stack.len >= MaxNesting: tooDeep(f.line)
+    stack.add f
   proc add(n: ANode) =
     cur.children.add n
     cur.labels.add ""
@@ -107,7 +110,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       n.branches.add br
       n.branchLabels.add unescapeLabel(label)
       add n
-      stack.add Frame(node: n, cur: br, line: l.num)
+      push Frame(node: n, cur: br, line: l.num)
       continue
     if lw.startsWith("elseif"):
       if stack[^1].node == nil or stack[^1].node.kind != akIf:
@@ -138,7 +141,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
     if lw.startsWith("switch"):
       let n = ANode(kind: akIf, cond: unescapeLabel(parenText(t)[0]), line: l.num)
       add n
-      stack.add Frame(node: n, cur: newSeqNode(), line: l.num)
+      push Frame(node: n, cur: newSeqNode(), line: l.num)
       continue
     if lw.startsWith("case"):
       if stack[^1].node == nil or stack[^1].node.kind != akIf:
@@ -161,7 +164,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       let r = rest.strip()
       if r.toLowerAscii().startsWith("is"): n.yes = unescapeLabel(parenText(r)[0])
       add n
-      stack.add Frame(node: n, cur: n.body, line: l.num)
+      push Frame(node: n, cur: n.body, line: l.num)
       continue
     if lw.startsWith("endwhile") or lw.startsWith("end while"):
       if stack[^1].node == nil or stack[^1].node.kind != akWhile:
@@ -173,7 +176,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
     if lw == "repeat" or lw.startsWith("repeat :") or (lw.startsWith("repeat") and not lw.startsWith("repeat while") and not lw.startsWith("repeatwhile")):
       let n = ANode(kind: akRepeat, line: l.num, body: newSeqNode())
       add n
-      stack.add Frame(node: n, cur: n.body, line: l.num)
+      push Frame(node: n, cur: n.body, line: l.num)
       let after = t[6 .. ^1].strip()
       if after.startsWith(":"):
         var a = after[1 .. ^1]
@@ -212,7 +215,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       n.branches.add br
       n.branchLabels.add ""
       add n
-      stack.add Frame(node: n, cur: br, line: l.num)
+      push Frame(node: n, cur: br, line: l.num)
       continue
     if lw in ["fork again", "split again"]:
       if stack[^1].node == nil or stack[^1].node.kind != akFork:
@@ -238,7 +241,7 @@ proc parseActivity(doc: Doc, ctx: Context): ANode =
       name = stripColor(name)[0]
       let n = ANode(kind: akPartition, text: unescapeLabel(stripQuotes(name)), line: l.num, body: newSeqNode())
       add n
-      stack.add Frame(node: n, cur: n.body, line: l.num)
+      push Frame(node: n, cur: n.body, line: l.num)
       continue
     if t == "}" or lw == "end group" or lw == "end partition":
       if stack[^1].node == nil or stack[^1].node.kind != akPartition:
@@ -380,7 +383,7 @@ proc measure(n: ANode) =
     measure(n.body)
     let condW = textWidth(n.cond, 12) + 2 * Diamond + 10
     n.axis = max(n.body.axis + 30, condW / 2 + 20)
-    n.w = n.axis + max(n.body.w - n.body.axis + 30, condW / 2 + 30 + textWidth(n.no, 11))
+    n.w = n.axis + max(n.body.w - n.body.axis + 30, max(condW / 2 + 30, Diamond + 24 + textWidth(n.no, 11)))
     n.h = 2 * Diamond + Gap + n.body.h + Gap + 18
   of akRepeat:
     measure(n.body)
@@ -487,11 +490,11 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     else:
       let x0 = if axes.len > 0: min(axes[0], ax) - 16 else: ax - 20
       let x1 = if axes.len > 0: max(axes[^1], ax) + 16 else: ax + 20
-      svg.rect(x0, y + 6, x1 - x0, 7, Ink, Ink, 2)
-      ctx.region(n.line, x0, y + 4, x1 - x0, 11)
+      svg.rect(x0, y, x1 - x0, 7, Ink, Ink, 2)
+      ctx.region(n.line, x0, y - 2, x1 - x0, 11)
     for i, b in n.branches:
       let a = axes[i]
-      let startY = if n.kind == akIf: y + Diamond else: y + 13
+      let startY = if n.kind == akIf: y + Diamond else: y + 7
       if n.kind == akIf:
         if abs(a - ax) < 0.5:
           svg.line(ax, y + 2 * Diamond, ax, y + top - 2)
@@ -554,7 +557,7 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     let rx = x + n.w - 8
     svg.path("M" & fmtF(ax + Diamond) & " " & fmtF(y + Diamond) & " H" & fmtF(rx) & " V" & fmtF(y + n.h - 4) &
       " H" & fmtF(ax) & " V" & fmtF(y + n.h))
-    if n.no.len > 0: svg.text(ax + Diamond + 6, y + Diamond + 15, n.no, size = 11, fill = Muted)
+    if n.no.len > 0: svg.text(rx - 4, y + Diamond + 15, n.no, "end", 11, fill = Muted)
   of akRepeat:
     let ax = x + n.axis
     svg.diamond(ax, y + Diamond)
@@ -582,7 +585,7 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     svg.text(x + 8, y + 14, n.text, size = 12, bold = true)
     ctx.region(n.line, x, y, tw + 6, 20)
     let ax = x + n.axis
-    svg.line(ax, y, ax, y + 30)
+    svg.line(ax, (if ax <= x + tw + 6: y + 20 else: y), ax, y + 30)
     draw(n.body, svg, (n.w - n.body.w) / 2 + x, y + 32, ctx)
     if not n.body.terminal: svg.line(ax, y + 32 + n.body.h, ax, y + n.h)
 

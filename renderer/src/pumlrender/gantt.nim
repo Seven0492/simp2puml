@@ -166,21 +166,32 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
     last = idx
 
   # résolution des débuts (dépendances : fin de la dépendance la plus tardive)
+  # parcours itératif : une très longue chaîne ne doit pas épuiser la pile
   var resolved = newSeq[bool](tasks.len)
-  proc resolve(i: int, depth = 0) =
-    if resolved[i] or depth > tasks.len: return
-    let o = tasks[i].anchor
-    if o >= 0 and o != i:
-      resolve(o, depth + 1)
-      tasks[i].start = tasks[o].start
-    for d in tasks[i].deps:
-      resolve(d, depth + 1)
-      tasks[i].start = max(tasks[i].start, tasks[d].start + tasks[d].duration)
-    # une chaîne de dépendances peut encore dépasser la borne
-    tasks[i].start = min(tasks[i].start, MaxDays)
-    tasks[i].duration = min(tasks[i].duration, MaxDays)
-    resolved[i] = true
-  for i in 0 ..< tasks.len: resolve(i)
+  var visiting = newSeq[bool](tasks.len)
+  for root in 0 ..< tasks.len:
+    var stack = @[root]
+    while stack.len > 0:
+      let i = stack[^1]
+      if resolved[i]:
+        discard stack.pop()
+        continue
+      if not visiting[i]:
+        visiting[i] = true
+        var needed = tasks[i].deps
+        if tasks[i].anchor >= 0 and tasks[i].anchor != i: needed.add tasks[i].anchor
+        for d in needed:
+          if not resolved[d] and not visiting[d]: stack.add d
+        if stack[^1] != i: continue
+      let o = tasks[i].anchor
+      if o >= 0 and o != i: tasks[i].start = tasks[o].start
+      for d in tasks[i].deps:
+        tasks[i].start = max(tasks[i].start, tasks[d].start + tasks[d].duration)
+      # une chaîne de dépendances peut encore dépasser la borne
+      tasks[i].start = min(tasks[i].start, MaxDays)
+      tasks[i].duration = min(tasks[i].duration, MaxDays)
+      resolved[i] = true
+      discard stack.pop()
 
   var svg: Svg
   var real = 0

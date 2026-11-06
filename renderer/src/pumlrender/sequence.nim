@@ -478,6 +478,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     lo, hi: int
     elses: seq[(float, string)]
     line: int
+    xmin, xmax: float   ## étendue des auto-messages et notes qui dépassent des colonnes
   var groups: seq[Grp]
   var callStack: seq[(int, int)]
   proc touch(cols: varargs[int]) =
@@ -486,6 +487,11 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         if c >= 0:
           g.lo = min(g.lo, c)
           g.hi = max(g.hi, c)
+  var rightmost = 0.0
+  proc extent(x0, x1: float) =
+    for g in groups.mitems:
+      g.xmin = min(g.xmin, x0)
+      g.xmax = max(g.xmax, x1)
   proc depth(p: int): int = (if p >= 0: active[p].len else: 0)
   proc px(p: int, side: float): float =
     ## abscisse d'une extrémité de message, compte tenu des activations
@@ -607,6 +613,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
           "none", color, 1.2, dash)
         fg.drawHead(x0 + 2, y1, PI, ev.head, color)
         ctx.region(ev.line, x0, ty, max(tw, 36) + 10, y1 - ty + 4)
+        extent(x0, x0 + 8 + max(tw, 36))
         y = y1 + 14
       else:
         if ev.createTarget and b >= 0: createAt(b, y + lh + 6, ev.line)
@@ -684,6 +691,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         w = tw
         x0 = cx[ev.span[0]] + 12
       for p in ev.span: touch(p)
+      extent(x0, x0 + w)
       let fill = if ev.color.len > 0: ev.color else: NoteFill
       if ev.kind == evRef:
         mid.rect(x0, y, w, th, "#FFFFFF", Stroke, 0, 1.4)
@@ -720,7 +728,9 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     of evSpace:
       y += ev.size
     of evGroupStart:
-      groups.add Grp(kind: ev.noteShape, label: ev.text, color: ev.color, y0: y, lo: high(int), hi: -1, line: ev.line)
+      if groups.len >= MaxNesting: tooDeep(ev.line)
+      groups.add Grp(kind: ev.noteShape, label: ev.text, color: ev.color, y0: y, lo: high(int), hi: -1, line: ev.line,
+        xmin: Inf, xmax: NegInf)
       y += 26
     of evGroupElse:
       if groups.len == 0:
@@ -739,8 +749,11 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
       let x0 = cx[lo] - parts[lo].w / 2 - 10 + float(groups.len) * 0
       let x1 = cx[hi] + parts[hi].w / 2 + 10
       let pad = float(groups.len) * 6
-      let gx0 = x0 - 6 + pad
-      let gx1 = x1 + 6 - pad
+      let gx0 = min(x0 - 6 + pad, g.xmin - 12 + pad)
+      let gx1 = max(x1 + 6 - pad, g.xmax + 12 - pad)
+      rightmost = max(rightmost, gx1)
+      # le cadre interne compte aussi dans l'étendue du cadre qui le contient
+      extent(gx0, gx1)
       mid.rect(gx0, g.y0, gx1 - gx0, y - g.y0 + 2, (if g.color.len > 0: g.color else: "none"), Stroke, 0, 1.3,
         extra = (if g.color.len > 0: "fill-opacity=\"0.25\"" else: ""))
       let kw = g.kind
@@ -796,4 +809,4 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     totalH = bottom + headH + 8
   var svg: Svg
   svg.body = boxSvg.body & bg.body & mid.body & fg.body
-  (svg, width, totalH + 6)
+  (svg, max(width, rightmost + 10), totalH + 6)

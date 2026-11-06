@@ -1,5 +1,5 @@
 ## Tests du moteur de rendu natif : nim c -r --path:src tests/test_render.nim
-import std/[unittest, os, strutils, xmlparser, xmltree, osproc]
+import std/[unittest, os, strutils, xmlparser, xmltree, osproc, sequtils]
 import pumlrender/[common, render, preprocess]
 
 const Samples = currentSourcePath().parentDir / "samples"
@@ -166,6 +166,115 @@ suite "robustesse (revue)":
   test "bloc skinparam non fermé signalé":
     let r = renderPuml("@startuml\nskinparam class {\nBackgroundColor red\nclass A\n@enduml\n")
     check r.errors.len == 1
+
+suite "imbrication extrême : diagnostic, jamais d'arrêt du processus":
+  proc rep(s: string, n: int): string =
+    for _ in 1 .. n: result.add s
+
+  test "activité":
+    for line in ["if (a) then\n", "while (a)\n", "partition x {\n", "repeat\n", "fork\n"]:
+      let r = renderPuml("@startuml\nstart\n" & rep(line, 50_000) & "@enduml\n")
+      check r.errors.anyIt("imbrication" in it)
+      check validSvg(r.svg)
+
+  test "conteneurs":
+    var src = "@startuml\n"
+    for i in 0 ..< 5_000: src.add "package P" & $i & " {\n"
+    let r = renderPuml(src & "@enduml\n")
+    check r.errors.anyIt("imbrication" in it)
+    check validSvg(r.svg)
+
+  test "cartes mentales":
+    var src = "@startmindmap\n"
+    for i in 1 .. 1_000: src.add rep("*", i) & " x\n"
+    let r = renderPuml(src & "@endmindmap\n")
+    check r.errors.anyIt("imbrication" in it)
+    check validSvg(r.svg)
+
+  test "JSON et YAML":
+    check renderPuml("@startjson\n" & rep("[", 100_000) & "\n@endjson\n").errors.anyIt("imbrication" in it)
+    check renderPuml("@startyaml\na: " & rep("[", 100_000) & rep("]", 100_000) & "\n@endyaml\n").errors.anyIt("imbrication" in it)
+
+  test "une imbrication raisonnable reste rendue":
+    let r = renderPuml("@startuml\nstart\n" & rep("if (a) then\n", 50) & ":x;\n" & rep("endif\n", 50) & "stop\n@enduml\n")
+    check r.errors.len == 0
+
+  test "Gantt : longue chaîne de dépendances, sans plantage":
+    var src = "@startgantt\n"
+    for i in 0 ..< 50_000: src.add "[T" & $i & "] starts at [T" & $(i + 1) & "]'s end\n"
+    let r = renderPuml(src & "@endgantt\n")
+    check validSvg(r.svg)
+
+  test "Gantt : dépendance circulaire":
+    let r = renderPuml("@startgantt\n[A] lasts 1 days\n[B] lasts 1 days\n[A] starts at [B]'s end\n[B] starts at [A]'s end\n@endgantt\n")
+    check validSvg(r.svg)
+
+suite "régions JSON et YAML":
+  proc lines(r: RenderResult): seq[int] =
+    for g in r.regions: result.add g.line
+
+  test "JSON : chaque valeur renvoie à sa ligne":
+    let r = renderPuml("@startjson\n{\n  \"a\": 1,\n  \"b\": {\n    \"c\": true\n  },\n  \"d\": [1,\n    2]\n}\n@endjson\n")
+    check r.errors.len == 0
+    let l = r.lines
+    check 3 in l
+    check 5 in l
+    check 8 in l
+
+  test "JSON invalide : ligne de l'erreur":
+    let r = renderPuml("@startjson\n{\n  \"a\": 1,\n  oups\n}\n@endjson\n")
+    check r.errors.len == 1
+    check r.diags[0].line == 4
+
+  test "YAML : chaque clé renvoie à sa ligne":
+    let r = renderPuml("@startyaml\na: 1\nb:\n  c: 2\n  d:\n    - x\n    - y: 3\n@endyaml\n")
+    check r.errors.len == 0
+    let l = r.lines
+    for n in [2, 3, 4, 5, 6, 7]: check n in l
+
+  test "YAML : listes et objets en ligne":
+    let r = renderPuml("@startyaml\na: [1, [2, 3], {k: v}]\n@endyaml\n")
+    check r.errors.len == 0
+    check "k" in r.svg and "v" in r.svg
+
+suite "rendu (revue visuelle)":
+  proc numbersAfter(svg, tag: string): seq[float] =
+    ## Coordonnées d'un premier attribut « tag="…" » de chaque élément.
+    var i = 0
+    while true:
+      i = svg.find(tag & "=\"", i)
+      if i < 0: break
+      i += tag.len + 2
+      result.add parseFloat(svg[i ..< svg.find('"', i)])
+
+  test "auto-message : le cadre englobe son libellé":
+    let label = "un libellé d'auto-message nettement plus long que les colonnes"
+    let r = renderPuml("@startuml\nA -> B\nalt x\nA -> A : " & label & "\nelse y\nA -> B\nend\n@enduml\n")
+    check r.errors.len == 0
+    let width = textWidth(label, 12)
+    # le cadre le plus à droite dépasse la fin du libellé (colonne A + 8 + largeur)
+    let xs = r.svg.numbersAfter("width")
+    check xs.anyIt(it >= width)
+    check r.width >= width
+
+  test "arêtes parallèles entre boîtes : traits séparés":
+    let r = renderPuml("@startuml\nstate A\nstate B\nA --> B : aller\nB --> A : retour\n@enduml\n")
+    # deux traits droits (une seule commande L), restés écartés jusqu'aux bords
+    var xs: seq[float]
+    var i = 0
+    while true:
+      i = r.svg.find("d=\"M", i)
+      if i < 0: break
+      i += 4
+      let d = r.svg[i ..< r.svg.find('"', i)]
+      if d.count(" L") == 1: xs.add parseFloat(d.split(' ')[0])
+    check xs.len == 2
+    check abs(xs[0] - xs[1]) > 15
+
+  test "libellé d'arête jamais hors du cadre":
+    let r = renderPuml("@startuml\nstate A\nstate B\nA --> B : un libellé plutôt long à droite\nB --> A : un autre libellé long à gauche\n@enduml\n")
+    for g in r.regions: check g.x >= 0 and g.y >= 0
+    for g in r.regions: check g.x + g.w <= r.width
 
 suite "ligne de commande":
   const Bin = currentSourcePath().parentDir.parentDir / "bin" / "pumlrender"
