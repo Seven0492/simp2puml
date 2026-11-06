@@ -111,7 +111,73 @@ pub struct Scene {
     pub link_items: HashMap<usize, Range<usize>>,
 }
 
+/// Hauteur visible d'un texte autour de sa ligne de base, en proportion de sa taille :
+/// du haut des majuscules au bas des jambages, plutôt que la boîte de ligne de la police.
+const TEXT_TOP: f32 = 0.74;
+const TEXT_BOTTOM: f32 = 0.22;
+/// Marge de `geometry_bounds` au-delà du trait, retirée pour mesurer ce qui se voit.
+const BOUNDS_MARGIN: f32 = 1.0;
+/// Une forme sans contour qui couvre presque toute la zone est un fond, pas un contenu.
+const BACKGROUND_SHARE: f32 = 0.6;
+
+impl Bounds {
+    pub fn contains(&self, o: &Bounds, margin: f32) -> bool {
+        o.x >= self.x - margin && o.y >= self.y - margin && o.x + o.w <= self.x + self.w + margin && o.y + o.h <= self.y + self.h + margin
+    }
+
+    fn union(self, o: Bounds) -> Bounds {
+        let (x, y) = (self.x.min(o.x), self.y.min(o.y));
+        Bounds { x, y, w: (self.x + self.w).max(o.x + o.w) - x, h: (self.y + self.h).max(o.y + o.h) - y }
+    }
+}
+
+/// Boîte de sélection : le contenu, avec le même écart de tous les côtés, sans sortir du
+/// parent. Contre un bord du parent l'écart de ce côté se réduit ; les autres ne changent pas.
+pub fn selection_box(content: Bounds, padding: f32, parent: Bounds) -> Bounds {
+    let x0 = (content.x - padding).max(parent.x).min(content.x);
+    let y0 = (content.y - padding).max(parent.y).min(content.y);
+    let x1 = (content.x + content.w + padding).min(parent.x + parent.w).max(content.x + content.w);
+    let y1 = (content.y + content.h + padding).min(parent.y + parent.h).max(content.y + content.h);
+    Bounds { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
 impl Scene {
+    /// Ce qui se voit réellement dans une zone cliquable (souvent plus large que son contenu,
+    /// pour que le clic soit facile). `text_width` : largeur mesurée avec la vraie police.
+    pub fn content_bounds(&self, zone: Bounds, text_width: &mut dyn FnMut(&Text) -> f32) -> Option<Bounds> {
+        let mut content: Option<Bounds> = None;
+        let mut add = |b: Bounds| content = Some(content.map_or(b, |c: Bounds| c.union(b)));
+        for item in &self.items {
+            match item {
+                Item::Shape { bounds, style, .. } => {
+                    let visible = Bounds {
+                        x: bounds.x + BOUNDS_MARGIN,
+                        y: bounds.y + BOUNDS_MARGIN,
+                        w: bounds.w - 2.0 * BOUNDS_MARGIN,
+                        h: bounds.h - 2.0 * BOUNDS_MARGIN,
+                    };
+                    let background = style.stroke.is_none() && visible.w * visible.h >= BACKGROUND_SHARE * zone.w * zone.h;
+                    if !background && zone.contains(&visible, 2.0) {
+                        add(visible);
+                    }
+                }
+                Item::Text { text, .. } => {
+                    let width = text_width(text);
+                    let x = match text.anchor {
+                        Anchor::Start => text.x,
+                        Anchor::Middle => text.x - width / 2.0,
+                        Anchor::End => text.x - width,
+                    };
+                    let inside = x >= zone.x - 2.0 && x <= zone.x + zone.w && text.y >= zone.y && text.y <= zone.y + zone.h;
+                    if inside {
+                        add(Bounds { x, y: text.y - TEXT_TOP * text.size, w: width, h: (TEXT_TOP + TEXT_BOTTOM) * text.size });
+                    }
+                }
+            }
+        }
+        content
+    }
+
     pub fn parse(svg: &str) -> Result<Scene, String> {
         let opts = ParsingOptions { allow_dtd: false, ..ParsingOptions::default() };
         let doc = Document::parse_with_options(svg, opts).map_err(|e| format!("SVG illisible : {e}"))?;
@@ -579,6 +645,57 @@ mod tests {
         let scene = Scene::parse(official).unwrap();
         assert_eq!(scene.link_items.get(&0), Some(&(1..2)));
         assert_eq!(scene.link_items.get(&1), Some(&(2..4)));
+    }
+
+    /// Une ligne d'attribut : icône et texte, dans une classe dont la zone est plus large.
+    fn member_scene() -> Scene {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><rect x="10" y="10" width="180" height="80" fill="#fff" stroke="#000"/><line x1="10" y1="30" x2="190" y2="30" stroke="#000"/><circle cx="24" cy="40" r="3" fill="#0a0" stroke="#0a0"/><text x="32" y="44" font-size="13">nom</text><text x="32" y="60" font-size="13">autre</text></svg>"##;
+        Scene::parse(svg).unwrap()
+    }
+
+    #[test]
+    fn the_selection_hugs_what_is_visible_not_the_clickable_row() {
+        let row = Bounds { x: 11.0, y: 32.0, w: 178.0, h: 16.0 };
+        let content = member_scene().content_bounds(row, &mut |t| t.content.len() as f32 * 8.0).unwrap();
+        assert_eq!(content.x, 20.5, "bord gauche de l'icône, trait compris");
+        assert_eq!(content.x + content.w, 32.0 + 24.0, "fin du texte mesuré, pas de la ligne");
+        assert!((content.y - (44.0 - 0.74 * 13.0)).abs() < 0.01, "le texte voisin n'entre pas");
+        assert!((content.y + content.h - (44.0 + 0.22 * 13.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_background_of_a_label_is_not_its_content() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><rect x="10" y="10" width="60" height="18" fill="#fff" stroke="none" fill-opacity="0.85"/><text x="20" y="24" font-size="12">lien</text></svg>"##;
+        let zone = Bounds { x: 10.0, y: 10.0, w: 60.0, h: 18.0 };
+        let content = Scene::parse(svg).unwrap().content_bounds(zone, &mut |_| 24.0).unwrap();
+        assert_eq!((content.x, content.w), (20.0, 24.0));
+    }
+
+    #[test]
+    fn an_element_with_a_border_is_its_own_content() {
+        let zone = Bounds { x: 10.0, y: 10.0, w: 180.0, h: 80.0 };
+        let content = member_scene().content_bounds(zone, &mut |_| 10.0).unwrap();
+        assert_eq!((content.x, content.y), (9.5, 9.5));
+        assert_eq!((content.w, content.h), (181.0, 81.0));
+    }
+
+    #[test]
+    fn an_empty_zone_has_no_content() {
+        let zone = Bounds { x: 195.0, y: 95.0, w: 4.0, h: 4.0 };
+        assert_eq!(member_scene().content_bounds(zone, &mut |_| 10.0), None);
+    }
+
+    #[test]
+    fn padding_is_equal_on_all_sides_until_the_parent_stops_it() {
+        let content = Bounds { x: 50.0, y: 50.0, w: 20.0, h: 10.0 };
+        let wide = Bounds { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        assert_eq!(selection_box(content, 3.0, wide), Bounds { x: 47.0, y: 47.0, w: 26.0, h: 16.0 });
+        // contre le bord gauche et le bord bas du parent : ces côtés se réduisent, pas les autres
+        let tight = Bounds { x: 49.0, y: 0.0, w: 100.0, h: 61.0 };
+        assert_eq!(selection_box(content, 3.0, tight), Bounds { x: 49.0, y: 47.0, w: 24.0, h: 14.0 });
+        // un parent plus petit que le contenu ne le coupe jamais
+        let inner = Bounds { x: 55.0, y: 55.0, w: 2.0, h: 2.0 };
+        assert_eq!(selection_box(content, 3.0, inner), content);
     }
 
     /// Extrait de ce que produit PlantUML : couleurs dans `style`, dégradé, fond de page.

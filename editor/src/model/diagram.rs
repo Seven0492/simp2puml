@@ -103,6 +103,25 @@ impl RenderOutput {
         self.diagnostics.iter().filter(|d| d.severity == sev).count()
     }
 
+    /// Élément qui contient cette zone : la plus petite région plus grande qu'elle.
+    pub fn parent_of(&self, index: usize) -> Option<&Region> {
+        let zone = self.regions.get(index)?;
+        let area = zone.w * zone.h;
+        self.regions
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| {
+                *i != index
+                    && r.w * r.h > area
+                    && r.x <= zone.x + 1.0
+                    && r.y <= zone.y + 1.0
+                    && r.x + r.w >= zone.x + zone.w - 1.0
+                    && r.y + r.h >= zone.y + zone.h - 1.0
+            })
+            .min_by(|(_, a), (_, b)| (a.w * a.h).total_cmp(&(b.w * b.h)))
+            .map(|(_, r)| r)
+    }
+
     /// Région la plus petite contenant le point (la plus précise).
     pub fn region_at(&self, x: f32, y: f32) -> Option<usize> {
         self.regions
@@ -204,6 +223,18 @@ mod tests {
         assert_eq!(r.diagnostics[0].line, 3);
         assert_eq!(r.diagnostics[0].severity, Severity::Warning);
         assert!(r.svg.ends_with("</svg>"));
+    }
+
+    #[test]
+    fn the_parent_is_the_smallest_region_that_contains_it() {
+        let zone = |x: f32, y: f32, w: f32, h: f32| Region { line: 1, x, y, w, h };
+        let r = RenderOutput {
+            regions: vec![zone(0.0, 0.0, 100.0, 100.0), zone(10.0, 10.0, 50.0, 50.0), zone(12.0, 12.0, 40.0, 10.0), zone(70.0, 70.0, 5.0, 5.0)],
+            ..RenderOutput::default()
+        };
+        assert_eq!(r.parent_of(2), Some(&r.regions[1]), "la classe, pas le paquet");
+        assert_eq!(r.parent_of(1), Some(&r.regions[0]));
+        assert_eq!(r.parent_of(0), None);
     }
 
     #[test]

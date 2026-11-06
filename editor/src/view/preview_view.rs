@@ -19,7 +19,7 @@ use std::ops::Range;
 
 use super::components::{button, hint};
 use super::theme;
-use crate::model::svg_scene::{Anchor, Color, Geometry, Item, PathCmd, Scene, Style as Paint, Text};
+use crate::model::svg_scene::{self, Anchor, Color, Geometry, Item, PathCmd, Scene, Style as Paint, Text};
 use crate::viewmodel::document_vm::{DocumentViewModel, LinkMenu};
 
 pub struct PreviewView {
@@ -287,8 +287,16 @@ impl Element for SceneElement {
                 .filter_map(|l| scene.link_items.get(&l.group))
                 .collect();
             paint_scene(&scene, &visible, &groups, t, window, cx);
-            if let Some(r) = p.hovered_region.and_then(|i| output.regions.get(i)) {
-                let b = Bounds::new(t.point(r.x - 2.0, r.y - 2.0), size(t.len(r.w + 4.0), t.len(r.h + 4.0)));
+            if let Some((index, r)) = p.hovered_region.and_then(|i| output.regions.get(i).map(|r| (i, r))) {
+                // la zone de clic peut être large ; la boîte, elle, épouse ce qui se voit
+                let zone = svg_scene::Bounds { x: r.x, y: r.y, w: r.w, h: r.h };
+                let content = scene.content_bounds(zone, &mut |text| measured_width(text, t, window)).unwrap_or(zone);
+                let limit = output
+                    .parent_of(index)
+                    .map(|o| svg_scene::Bounds { x: o.x, y: o.y, w: o.w, h: o.h })
+                    .unwrap_or(svg_scene::Bounds { x: 0.0, y: 0.0, w: scene.width, h: scene.height });
+                let area = svg_scene::selection_box(content, SELECTION_PADDING / p.zoom, limit);
+                let b = Bounds::new(t.point(area.x, area.y), size(t.len(area.w), t.len(area.h)));
                 window.paint_quad(
                     quad(b, Corners::all(px(3.)), theme::region_hover(), Edges::all(px(1.)), theme::accent(), Default::default()),
                 );
@@ -434,11 +442,39 @@ fn append_commands(b: &mut PathBuilder, cmds: &[PathCmd], t: Transform) {
     }
 }
 
-fn paint_text(text: &Text, t: Transform, window: &mut Window, cx: &mut App) {
-    let size_px = text.size * t.zoom;
-    if size_px < 2.5 {
-        return; // illisible : inutile de mettre en forme
+/// Écart entre un élément survolé et sa boîte, en pixels à l'écran : le même à tout zoom.
+const SELECTION_PADDING: f32 = 3.0;
+
+/// En dessous, le texte est illisible : inutile de le mettre en forme.
+const MIN_TEXT_PIXELS: f32 = 2.5;
+
+/// Largeur d'un texte telle qu'elle sera peinte, en unités du SVG.
+fn measured_width(text: &Text, t: Transform, window: &mut Window) -> f32 {
+    if text.size * t.zoom < MIN_TEXT_PIXELS {
+        return text.content.chars().count() as f32 * text.size * 0.6;
     }
+    f32::from(shape_text(text, t, window).width) / t.zoom
+}
+
+fn paint_text(text: &Text, t: Transform, window: &mut Window, cx: &mut App) {
+    if text.size * t.zoom < MIN_TEXT_PIXELS {
+        return;
+    }
+    let shaped = shape_text(text, t, window);
+    let x = t.point(text.x, text.y).x
+        - match text.anchor {
+            Anchor::Start => px(0.),
+            Anchor::Middle => shaped.width / 2.0,
+            Anchor::End => shaped.width,
+        };
+    // y SVG = ligne de base ; GPUI peint depuis le haut de la boîte de ligne
+    let line_height = shaped.ascent + shaped.descent;
+    let top = t.point(text.x, text.y).y - shaped.ascent;
+    let _ = shaped.paint(point(x, top), line_height, window, cx);
+}
+
+fn shape_text(text: &Text, t: Transform, window: &mut Window) -> gpui::ShapedLine {
+    let size_px = text.size * t.zoom;
     let mut f = font(if text.monospace { theme::DIAGRAM_MONO_FONT } else { theme::DIAGRAM_FONT });
     if text.bold {
         f.weight = FontWeight::BOLD;
@@ -455,17 +491,7 @@ fn paint_text(text: &Text, t: Transform, window: &mut Window, cx: &mut App) {
         underline: text.underline.then(|| UnderlineStyle { thickness: px(1.0), color: Some(color), wavy: false }),
         strikethrough: None,
     };
-    let shaped = window.text_system().shape_line(SharedString::from(text.content.clone()), px(size_px), &[run], None);
-    let x = t.point(text.x, text.y).x
-        - match text.anchor {
-            Anchor::Start => px(0.),
-            Anchor::Middle => shaped.width / 2.0,
-            Anchor::End => shaped.width,
-        };
-    // y SVG = ligne de base ; GPUI peint depuis le haut de la boîte de ligne
-    let line_height = shaped.ascent + shaped.descent;
-    let top = t.point(text.x, text.y).y - shaped.ascent;
-    let _ = shaped.paint(point(x, top), line_height, window, cx);
+    window.text_system().shape_line(SharedString::from(text.content.clone()), px(size_px), &[run], None)
 }
 
 #[cfg(test)]
