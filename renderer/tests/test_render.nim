@@ -499,6 +499,60 @@ stop
     let r = renderPuml("@startuml\nheader H\nfooter F\ncaption C\nclass A\n@enduml\n")
     for line in [2, 3, 4]: check r.hit(line) == line
 
+suite "libellés de relations":
+  proc labelBoxes(r: RenderResult, count: int): seq[Region] =
+    ## Les zones de libellé : une par relation, repérées par leur ligne et leur faible hauteur.
+    for g in r.regions:
+      if g.h < 20 and g.w > 12: result.add g
+    check result.len >= count
+
+  proc anyOverlap(boxes: seq[Region]): bool =
+    for i in 0 ..< boxes.len:
+      for j in i + 1 ..< boxes.len:
+        let (a, b) = (boxes[i], boxes[j])
+        if a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h: return true
+
+  test "deux flèches voisines ne superposent plus leurs libellés":
+    let r = renderPuml("""@startuml
+class Plein
+class Creux
+class Pointille
+class Composition
+class Ouvert
+class Cible
+Plein -[bold]-> Cible : flèche
+Creux --|> Cible : héritage
+Pointille ..|> Cible : réalisation
+Composition *-- Cible : composition
+Ouvert ..> Cible : dépendance
+@enduml
+""")
+    check r.errors.len == 0
+    check not r.labelBoxes(5).anyOverlap
+
+  test "beaucoup de flèches vers la même classe":
+    var src = "@startuml\nclass Noyau\n"
+    for i in 0 ..< 10: src.add "class C" & $i & "\nC" & $i & " --> Noyau : un libellé assez long " & $i & "\n"
+    let r = renderPuml(src & "@enduml\n")
+    check not r.labelBoxes(10).anyOverlap
+
+  test "un libellé ne se pose pas sur une boîte":
+    let r = renderPuml("@startuml\nclass A\nclass B\nclass C\nA --> B : un très long libellé qui devrait déborder sur le voisin\nA --> C\n@enduml\n")
+    let label = r.regions.filterIt(it.h < 20 and it.w > 100)[0]
+    for g in r.regions:
+      if g.h > 30:
+        check not (label.x < g.x + g.w and g.x < label.x + label.w and label.y < g.y + g.h and g.y < label.y + label.h)
+
+  test "un libellé libre garde sa place au milieu de la flèche":
+    let r = renderPuml("@startuml\nclass A\nclass B\nA --> B : lien\n@enduml\n")
+    let (first, last) = (r.links[0].points[0], r.links[0].points[^1])
+    let label = r.regions.filterIt(it.h < 20 and it.line == 4)[0]
+    check abs((label.y + label.h / 2) - (first[1] + last[1]) / 2) < 2
+
+  test "multiplicités : pas sur un libellé":
+    let r = renderPuml("@startuml\nclass A\nclass B\nclass C\nA \"1..*\" --> \"0..1\" B : un libellé\nA \"1\" --> \"*\" C : un autre libellé\n@enduml\n")
+    check not r.labelBoxes(4).anyOverlap
+
 suite "imbrication extrême : diagnostic, jamais d'arrêt du processus":
   proc rep(s: string, n: int): string =
     for _ in 1 .. n: result.add s

@@ -1277,7 +1277,52 @@ proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
       svg.rect(x, y, w, h, bg, Stroke, 2)
       header(svg, if cont: titleTop else: y + (h - hh) / 2)
 
-proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: Context) =
+type LabelBox = tuple[x, y, w, h: float]
+
+proc overlaps(a, b: LabelBox): bool =
+  a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h
+
+proc isFree(g: GraphDiagram, box: LabelBox, placed: seq[LabelBox]): bool =
+  ## Ni sur un autre libellé, ni sur une boîte (un conteneur peut contenir le libellé).
+  for other in placed:
+    if overlaps(box, other): return false
+  for e in g.entities:
+    if not e.isContainer and overlaps(box, (e.x, e.y, e.w, e.h)): return false
+  true
+
+proc pointAlong(pts: seq[(float, float)], fraction: float): (float, float, bool) =
+  ## Point à cette fraction de la longueur du tracé, et si le trait y est plutôt vertical.
+  var total = 0.0
+  for k in 1 .. pts.high: total += hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1])
+  var left = total * fraction
+  for k in 1 .. pts.high:
+    let (ax, ay) = pts[k - 1]
+    let (bx, by) = pts[k]
+    let d = hypot(bx - ax, by - ay)
+    if d >= left or k == pts.high:
+      let t = if d > 0: min(left / d, 1.0) else: 0.0
+      return (ax + (bx - ax) * t, ay + (by - ay) * t, abs(by - ay) > abs(bx - ax))
+    left -= d
+
+proc endLabel(g: GraphDiagram, svg: var Svg, ctx: Context, placed: var seq[LabelBox], line: int, p, q: (float, float), s: string) =
+  if s.len == 0: return
+  let dx = q[0] - p[0]
+  let dy = q[1] - p[1]
+  let L = max(1e-6, sqrt(dx * dx + dy * dy))
+  let ux = dx / L
+  let uy = dy / L
+  let tw = textWidth(s, 11) + 4
+  # d'un côté du trait, ou de l'autre si un libellé y est déjà
+  var px = p[0] + ux * 16 - uy * 12
+  var py = p[1] + uy * 16 + ux * 12
+  if not g.isFree((px - tw / 2, py - 8, tw, 15.0), placed):
+    let (ox, oy) = (p[0] + ux * 16 + uy * 12, p[1] + uy * 16 - ux * 12)
+    if g.isFree((ox - tw / 2, oy - 8, tw, 15.0), placed): (px, py) = (ox, oy)
+  placed.add (px - tw / 2, py - 8, tw, 15.0)
+  svg.text(px, py + 4, s, "middle", 11, fill = Muted)
+  ctx.region(line, px - tw / 2, py - 8, tw, 15)
+
+proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: Context, placed: var seq[LabelBox]) =
   if r.hidden: return
   let ea = g.entities[r.a]
   let eb = g.entities[r.b]
@@ -1301,6 +1346,7 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     if r.label.len > 0:
       let lines = r.label.split('\n')
       ctx.region(r.line, x0 + 34, y0 + (y1 - y0) / 2 - blockHeight(lines.len) / 2, blockWidth(lines, 12), blockHeight(lines.len))
+      placed.add (x0 + 34, y0 + (y1 - y0) / 2 - blockHeight(lines.len) / 2, blockWidth(lines, 12), blockHeight(lines.len))
     return
   var ca = ea.center
   var cb = eb.center
@@ -1353,26 +1399,32 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     # segment central plutôt vertical : libellé à côté du trait, pas dessus
     let k = max(1, pts.len div 2)
     let vertical = abs(pts[k][1] - pts[k - 1][1]) > abs(pts[k][0] - pts[k - 1][0])
-    let lx = if nx < -0.5: mx - lw / 2 - 6
+    let side = if nx < -0.5: -1.0 else: 1.0  # arête parallèle : du côté où elle est décalée
+    var lx = if nx < -0.5: mx - lw / 2 - 6
              elif nx > 0.5 or vertical: mx + lw / 2 + 6
              else: mx
-    labels.rect(lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2, Background, "none", 0, 0, "", "fill-opacity=\"0.85\"")
-    labels.textBlock(lx, my - lh / 2, lines, "middle", 12)
-    ctx.region(r.line, lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2)
-  proc endLabel(svg: var Svg, p, q: (float, float), s: string) =
-    if s.len == 0: return
-    let dx = q[0] - p[0]
-    let dy = q[1] - p[1]
-    let L = max(1e-6, sqrt(dx * dx + dy * dy))
-    let ux = dx / L
-    let uy = dy / L
-    let px = p[0] + ux * 16 - uy * 12
-    let py = p[1] + uy * 16 + ux * 12
-    svg.text(px, py + 4, s, "middle", 11, fill = Muted)
-    let tw = textWidth(s, 11) + 4
-    ctx.region(r.line, px - tw / 2, py - 8, tw, 15)
-  labels.endLabel(pts[0], pts[1], r.multA)
-  labels.endLabel(pts[^1], pts[^2], r.multB)
+    var ly = my
+    # si cette place est prise, le libellé glisse le long de sa flèche, d'un côté puis de l'autre
+    proc box(cx, cy: float): LabelBox = (cx - lw / 2 - 3, cy - lh / 2 - 1, lw + 6, lh + 2)
+    if not g.isFree(box(lx, ly), placed):
+      block search:
+        # d'abord collé au trait ; dans un faisceau serré, un peu plus loin plutôt que par-dessus
+        for extra in [0.0, 24.0, 56.0, 96.0]:
+          for fraction in [0.5, 0.38, 0.62, 0.28, 0.72, 0.2, 0.8]:
+            let (px, py, steep) = pointAlong(pts, fraction)
+            let options =
+              if steep: @[(px + side * (lw / 2 + 6 + extra), py), (px - side * (lw / 2 + 6 + extra), py)]
+              else: @[(px, py - lh / 2 - 4 - extra), (px, py + lh / 2 + 4 + extra)]
+            for (cx, cy) in options:
+              if g.isFree(box(cx, cy), placed):
+                (lx, ly) = (cx, cy)
+                break search
+    placed.add box(lx, ly)
+    labels.rect(lx - lw / 2 - 3, ly - lh / 2 - 1, lw + 6, lh + 2, Background, "none", 0, 0, "", "fill-opacity=\"0.85\"")
+    labels.textBlock(lx, ly - lh / 2, lines, "middle", 12)
+    ctx.region(r.line, lx - lw / 2 - 3, ly - lh / 2 - 1, lw + 6, lh + 2)
+  g.endLabel(labels, ctx, placed, r.line, pts[0], pts[1], r.multA)
+  g.endLabel(labels, ctx, placed, r.line, pts[^1], pts[^2], r.multB)
 
 proc segHits(p, q: (float, float), x, y, w, h: float): bool =
   ## Le segment p→q traverse-t-il le rectangle (Liang–Barsky) ?
@@ -1451,6 +1503,7 @@ proc paintAll(g: var GraphDiagram, ctx: Context): Svg =
   conts.sort()
   for (_, i) in conts: g.drawEntity(svg, g.entities[i], ctx)
   var labels: Svg
+  var placed: seq[LabelBox]
   var pairCount = initTable[(int, int), int]()
   var pairSeen = initTable[(int, int), int]()
   for r in g.rels:
@@ -1470,7 +1523,7 @@ proc paintAll(g: var GraphDiagram, ctx: Context): Svg =
     if r.a > r.b: off = -off
     # arête déjà routée par des points intermédiaires : pas de décalage supplémentaire
     if r.points.len > 0: off = 0
-    g.drawRel(svg, labels, r, off, ctx)
+    g.drawRel(svg, labels, r, off, ctx, placed)
   for e in g.entities:
     if not e.isContainer: g.drawEntity(svg, e, ctx)
   # libellés après les boîtes pour rester lisibles
