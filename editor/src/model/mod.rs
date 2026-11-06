@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod completion;
 pub mod diagram;
+pub mod glyph_metrics;
 pub mod preferences;
 pub mod preflight;
 pub mod svg_scene;

@@ -16,6 +16,8 @@ use std::ops::Range;
 
 use roxmltree::{Document, Node, ParsingOptions};
 
+use crate::model::glyph_metrics;
+
 /// Couleur RGBA (0xRRGGBBAA).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color(pub u32);
@@ -111,10 +113,6 @@ pub struct Scene {
     pub link_items: HashMap<usize, Range<usize>>,
 }
 
-/// Hauteur visible d'un texte autour de sa ligne de base, en proportion de sa taille :
-/// du haut des majuscules au bas des jambages, plutôt que la boîte de ligne de la police.
-const TEXT_TOP: f32 = 0.74;
-const TEXT_BOTTOM: f32 = 0.22;
 /// Marge de `geometry_bounds` au-delà du trait, retirée pour mesurer ce qui se voit.
 const BOUNDS_MARGIN: f32 = 1.0;
 /// Une forme sans contour qui couvre presque toute la zone est un fond, pas un contenu.
@@ -143,8 +141,16 @@ pub fn selection_box(content: Bounds, padding: f32, parent: Bounds) -> Bounds {
 
 impl Scene {
     /// Ce qui se voit réellement dans une zone cliquable (souvent plus large que son contenu,
-    /// pour que le clic soit facile). `text_width` : largeur mesurée avec la vraie police.
-    pub fn content_bounds(&self, zone: Bounds, text_width: &mut dyn FnMut(&Text) -> f32) -> Option<Bounds> {
+    /// pour que le clic soit facile). `text_width` : largeur mesurée avec la vraie police ;
+    /// `baseline` : ordonnée où la ligne de base sera réellement peinte ;
+    /// `pixels_per_unit` : pixels de l'écran par unité du SVG (le zoom, à l'échelle de l'écran).
+    pub fn content_bounds(
+        &self,
+        zone: Bounds,
+        text_width: &mut dyn FnMut(&Text) -> f32,
+        baseline: &mut dyn FnMut(f32) -> f32,
+        pixels_per_unit: f32,
+    ) -> Option<Bounds> {
         let mut content: Option<Bounds> = None;
         let mut add = |b: Bounds| content = Some(content.map_or(b, |c: Bounds| c.union(b)));
         for item in &self.items {
@@ -170,7 +176,8 @@ impl Scene {
                     };
                     let inside = x >= zone.x - 2.0 && x <= zone.x + zone.w && text.y >= zone.y && text.y <= zone.y + zone.h;
                     if inside {
-                        add(Bounds { x, y: text.y - TEXT_TOP * text.size, w: width, h: (TEXT_TOP + TEXT_BOTTOM) * text.size });
+                        let (top, bottom) = glyph_metrics::text_extent(text, pixels_per_unit);
+                        add(Bounds { x, y: baseline(text.y) - top, w: width, h: top + bottom });
                     }
                 }
             }
@@ -656,25 +663,34 @@ mod tests {
     #[test]
     fn the_selection_hugs_what_is_visible_not_the_clickable_row() {
         let row = Bounds { x: 11.0, y: 32.0, w: 178.0, h: 16.0 };
-        let content = member_scene().content_bounds(row, &mut |t| t.content.len() as f32 * 8.0).unwrap();
+        let content = member_scene().content_bounds(row, &mut |t| t.content.len() as f32 * 8.0, &mut |y| y, 1.0).unwrap();
         assert_eq!(content.x, 20.5, "bord gauche de l'icône, trait compris");
         assert_eq!(content.x + content.w, 32.0 + 24.0, "fin du texte mesuré, pas de la ligne");
-        assert!((content.y - (44.0 - 0.74 * 13.0)).abs() < 0.01, "le texte voisin n'entre pas");
-        assert!((content.y + content.h - (44.0 + 0.22 * 13.0)).abs() < 0.01);
+        // « nom » n'a que des minuscules sans jambage ; c'est l'icône qui fixe le haut et le bas
+        assert_eq!(content.y, 36.5, "le texte voisin n'entre pas");
+        assert_eq!(content.y + content.h, 44.0, "rien sous la ligne de base : ni g ni parenthèse");
+    }
+
+    #[test]
+    fn the_box_follows_where_the_text_is_really_painted() {
+        let row = Bounds { x: 30.0, y: 34.0, w: 100.0, h: 14.0 };
+        let exact = member_scene().content_bounds(row, &mut |_| 10.0, &mut |y| y, 1.0).unwrap();
+        let raised = member_scene().content_bounds(row, &mut |_| 10.0, &mut |y| y - 0.5, 1.0).unwrap();
+        assert_eq!(raised.y, exact.y - 0.5);
     }
 
     #[test]
     fn the_background_of_a_label_is_not_its_content() {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><rect x="10" y="10" width="60" height="18" fill="#fff" stroke="none" fill-opacity="0.85"/><text x="20" y="24" font-size="12">lien</text></svg>"##;
         let zone = Bounds { x: 10.0, y: 10.0, w: 60.0, h: 18.0 };
-        let content = Scene::parse(svg).unwrap().content_bounds(zone, &mut |_| 24.0).unwrap();
+        let content = Scene::parse(svg).unwrap().content_bounds(zone, &mut |_| 24.0, &mut |y| y, 1.0).unwrap();
         assert_eq!((content.x, content.w), (20.0, 24.0));
     }
 
     #[test]
     fn an_element_with_a_border_is_its_own_content() {
         let zone = Bounds { x: 10.0, y: 10.0, w: 180.0, h: 80.0 };
-        let content = member_scene().content_bounds(zone, &mut |_| 10.0).unwrap();
+        let content = member_scene().content_bounds(zone, &mut |_| 10.0, &mut |y| y, 1.0).unwrap();
         assert_eq!((content.x, content.y), (9.5, 9.5));
         assert_eq!((content.w, content.h), (181.0, 81.0));
     }
@@ -682,7 +698,7 @@ mod tests {
     #[test]
     fn an_empty_zone_has_no_content() {
         let zone = Bounds { x: 195.0, y: 95.0, w: 4.0, h: 4.0 };
-        assert_eq!(member_scene().content_bounds(zone, &mut |_| 10.0), None);
+        assert_eq!(member_scene().content_bounds(zone, &mut |_| 10.0, &mut |y| y, 1.0), None);
     }
 
     #[test]

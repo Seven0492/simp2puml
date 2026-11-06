@@ -222,6 +222,11 @@ impl Transform {
     fn len(&self, v: f32) -> Pixels {
         px(v * self.zoom)
     }
+    /// Ligne de base d'un texte, sur un pixel entier de l'écran. Sinon GPUI l'arrondit
+    /// lui-même vers le haut, et le texte n'est plus là où la boîte de survol le croit.
+    fn baseline(&self, y: f32, scale: f32) -> Pixels {
+        px((f32::from(self.point(0.0, y).y) * scale).round() / scale)
+    }
 }
 
 fn hsla(c: Color) -> Hsla {
@@ -290,13 +295,22 @@ impl Element for SceneElement {
             if let Some((index, r)) = p.hovered_region.and_then(|i| output.regions.get(i).map(|r| (i, r))) {
                 // la zone de clic peut être large ; la boîte, elle, épouse ce qui se voit
                 let zone = svg_scene::Bounds { x: r.x, y: r.y, w: r.w, h: r.h };
-                let content = scene.content_bounds(zone, &mut |text| measured_width(text, t, window)).unwrap_or(zone);
+                let scale = window.scale_factor();
+                let content = scene
+                    .content_bounds(zone, &mut |text| measured_width(text, t, window), &mut |y| f32::from(t.baseline(y, scale) - t.origin.y) / t.zoom, t.zoom * scale)
+                    .unwrap_or(zone);
                 let limit = output
                     .parent_of(index)
                     .map(|o| svg_scene::Bounds { x: o.x, y: o.y, w: o.w, h: o.h })
                     .unwrap_or(svg_scene::Bounds { x: 0.0, y: 0.0, w: scene.width, h: scene.height });
                 let area = svg_scene::selection_box(content, SELECTION_PADDING / p.zoom, limit);
-                let b = Bounds::new(t.point(area.x, area.y), size(t.len(area.w), t.len(area.h)));
+                // bords sur des pixels entiers : le trait reste net, et l'écart égal à l'œil
+                let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
+                let (top_left, bottom_right) = (t.point(area.x, area.y), t.point(area.x + area.w, area.y + area.h));
+                let b = Bounds::from_corners(
+                    point(snap(top_left.x), snap(top_left.y)),
+                    point(snap(bottom_right.x), snap(bottom_right.y)),
+                );
                 window.paint_quad(
                     quad(b, Corners::all(px(3.)), theme::region_hover(), Edges::all(px(1.)), theme::accent(), Default::default()),
                 );
@@ -467,9 +481,10 @@ fn paint_text(text: &Text, t: Transform, window: &mut Window, cx: &mut App) {
             Anchor::Middle => shaped.width / 2.0,
             Anchor::End => shaped.width,
         };
-    // y SVG = ligne de base ; GPUI peint depuis le haut de la boîte de ligne
+    // y SVG = ligne de base ; GPUI peint depuis le haut de la boîte de ligne. La petite marge
+    // évite qu'une erreur d'arrondi fasse retomber le texte un pixel plus haut.
     let line_height = shaped.ascent + shaped.descent;
-    let top = t.point(text.x, text.y).y - shaped.ascent;
+    let top = t.baseline(text.y, window.scale_factor()) - shaped.ascent + px(0.01);
     let _ = shaped.paint(point(x, top), line_height, window, cx);
 }
 
