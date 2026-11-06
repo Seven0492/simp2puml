@@ -11,10 +11,11 @@ use gpui::{
 };
 
 use super::actions::*;
-use super::components::{button, field, hint, separator};
+use super::components::{button, choice, field, hint, separator, tooltip};
 use super::editor_view::EditorView;
 use super::preview_view::PreviewView;
 use super::theme;
+use crate::model::preferences::ThemeChoice;
 use crate::model::templates::TEMPLATES;
 use crate::viewmodel::document_vm::{DocumentEvent, DocumentViewModel};
 use crate::viewmodel::editor_vm::EditorViewModel;
@@ -46,6 +47,11 @@ impl WorkspaceView {
                 cx.notify();
             }),
             cx.subscribe_in(&vm, window, |this, _, ev: &WorkspaceEvent, window, cx| this.on_workspace_event(ev, window, cx)),
+            // thème « Système » : suivre les changements d'apparence
+            cx.observe_window_appearance(window, |_, window, cx| {
+                window.refresh();
+                cx.notify();
+            }),
         ];
         window.on_window_should_close(cx, {
             let vm = vm.downgrade();
@@ -272,6 +278,44 @@ impl WorkspaceView {
             .child(button("tb-zoom", format!("{zoom} %")).on_click(self.with_document(|d, cx| d.zoom_reset(cx), cx)))
             .child(button("tb-zoom-in", "+").on_click(self.with_document(|d, cx| d.zoom_by(1.25, cx), cx)))
             .child(button("tb-fit", "Ajuster").on_click(self.with_document(|d, cx| d.zoom_fit(cx), cx)))
+            .child(separator())
+            .child(
+                button("tb-preferences", "⚙")
+                    .tooltip(tooltip("Préférences (Ctrl+,)"))
+                    .on_click(self.with_vm(|vm, cx| vm.toggle_preferences(cx), cx)),
+            )
+    }
+
+    /// Barre des préférences : chaque choix s'applique et s'enregistre aussitôt.
+    fn render_preferences(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.vm.read(cx).preferences.clone();
+        let label = |t: &'static str| div().text_size(px(13.)).text_color(theme::text()).pl_2().child(t);
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .bg(theme::secondary_bar())
+            .border_b_1()
+            .border_color(theme::border())
+            .child(label("Thème :"))
+            .children(ThemeChoice::ALL.iter().map(|&t| {
+                choice(format!("pref-theme-{}", t.label()), t.label(), p.theme == t)
+                    .on_click(self.with_vm(move |vm, cx| vm.set_theme(t, cx), cx))
+            }))
+            .child(separator())
+            .child(label("Diagramme en thème sombre :"))
+            .child(choice("pref-sheet", "Feuille claire", !p.adapt_diagram).on_click(self.with_vm(|vm, cx| vm.set_adapt_diagram(false, cx), cx)))
+            .child(choice("pref-adapt", "Couleurs adaptées", p.adapt_diagram).on_click(self.with_vm(|vm, cx| vm.set_adapt_diagram(true, cx), cx)))
+            .child(separator())
+            .child(label("Autocomplétion :"))
+            .child(choice("pref-ac-on", "Pendant la frappe", p.autocomplete).on_click(self.with_vm(|vm, cx| vm.set_autocomplete(true, cx), cx)))
+            .child(choice("pref-ac-off", "Ctrl+Espace seulement", !p.autocomplete).on_click(self.with_vm(|vm, cx| vm.set_autocomplete(false, cx), cx)))
+            .child(div().flex_1())
+            .child(button("pref-close", "×").tooltip(tooltip("Fermer les préférences")).on_click(self.with_vm(|vm, cx| vm.toggle_preferences(cx), cx)))
     }
 
     fn render_templates(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -283,7 +327,7 @@ impl WorkspaceView {
             .gap_1()
             .px_2()
             .py_1()
-            .bg(gpui::rgb(0xeef2f8))
+            .bg(theme::secondary_bar())
             .border_b_1()
             .border_color(theme::border())
             .child(div().pr_2().child(hint("Nouveau diagramme :")))
@@ -307,7 +351,7 @@ impl WorkspaceView {
             .py_1()
             .bg(theme::warning_bar())
             .border_b_1()
-            .border_color(gpui::rgb(0xe8d9a8))
+            .border_color(theme::warning_border())
             .child(div().text_size(px(13.)).child(purpose.label()))
             .child(field(view, None))
             .child(hint("Entrée pour valider, Échap pour annuler"))
@@ -402,7 +446,7 @@ impl WorkspaceView {
     fn render_diagnostics(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let doc = self.vm.read(cx).active_document().clone();
         let count = doc.read(cx).output().map(|o| o.diagnostics.len()).unwrap_or(0);
-        let panel = div().h(px(120.)).flex_none().bg(gpui::rgb(0xfbfcfe)).border_t_1().border_color(theme::border()).text_size(px(12.5));
+        let panel = div().h(px(120.)).flex_none().bg(theme::diagnostics_bg()).border_t_1().border_color(theme::border()).text_size(px(12.5));
         if count == 0 {
             return panel.child(div().px_3().py_2().text_color(theme::muted()).child("Aucun diagnostic.")).into_any_element();
         }
@@ -424,7 +468,7 @@ impl WorkspaceView {
                                 .px_3()
                                 .py(px(3.))
                                 .cursor_pointer()
-                                .hover(|s| s.bg(gpui::rgb(0xeef2f8)))
+                                .hover(|s| s.bg(theme::row_hover()))
                                 .on_click(move |_, _, cx: &mut App| {
                                     if line > 0 {
                                         editor.update(cx, |e, cx| e.go_to_line(line - 1, cx));
@@ -448,7 +492,13 @@ impl WorkspaceView {
         let (line, col) = doc.editor.read(cx).cursor_line_col();
         let (errors, warnings) = doc.diagnostic_counts();
         let (kind, blocks) = doc.output().map(|o| (o.kind.clone(), o.blocks)).unwrap_or_default();
-        let state = if doc.is_up_to_date(cx) { "à jour" } else { "rendu…" };
+        let state = if doc.render_error.is_some() && !doc.render_pending {
+            "erreur de rendu"
+        } else if doc.is_up_to_date(cx) {
+            "à jour"
+        } else {
+            "rendu…"
+        };
         let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "non enregistré".into());
         let block = doc.block;
         let status = ws.status.clone();
@@ -464,7 +514,7 @@ impl WorkspaceView {
             .border_t_1()
             .border_color(theme::border())
             .text_size(px(12.))
-            .text_color(gpui::rgb(0x4b5563))
+            .text_color(theme::status_text())
             .child(format!("Ln {line}, Col {col}"))
             .child(format!("Type : {}", if kind.is_empty() { "—" } else { &kind }))
             .when(blocks > 1, |s| {
@@ -512,9 +562,20 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (doc, split, find_open, templates_open, diagnostics_open, prompt) = {
+        let (doc, split, find_open, templates_open, diagnostics_open, prompt, preferences_open) = {
             let ws = self.vm.read(cx);
-            (ws.active_document().clone(), ws.split, ws.find.open, ws.templates_open, ws.diagnostics_open, ws.path_prompt.clone())
+            // palette de ce rendu (les vues enfants sont dessinées après celle-ci)
+            let system_dark = matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark);
+            theme::set_appearance(ws.preferences.theme.is_dark(system_dark), ws.preferences.adapt_diagram);
+            (
+                ws.active_document().clone(),
+                ws.split,
+                ws.find.open,
+                ws.templates_open,
+                ws.diagnostics_open,
+                ws.path_prompt.clone(),
+                ws.preferences_open,
+            )
         };
         let editor_vm = doc.read(cx).editor.clone();
         let editor = self.editor_view(&editor_vm, window, cx);
@@ -550,6 +611,7 @@ impl Render for WorkspaceView {
             ReplaceAll => |this, cx| this.vm_do(cx, |vm, cx| vm.replace_all(cx)),
             ToggleDiagnostics => |this, cx| this.vm_do(cx, |vm, cx| vm.toggle_diagnostics(cx)),
             ToggleTemplates => |this, cx| this.vm_do(cx, |vm, cx| vm.toggle_templates(cx)),
+            TogglePreferences => |this, cx| this.vm_do(cx, |vm, cx| vm.toggle_preferences(cx)),
             Quit => |this, cx| this.vm_do(cx, |vm, cx| vm.request_quit(cx)),
             ZoomIn => |this, cx| this.doc_do(cx, |d, cx| d.zoom_by(1.25, cx)),
             ZoomOut => |this, cx| this.doc_do(cx, |d, cx| d.zoom_by(1.0 / 1.25, cx)),
@@ -559,6 +621,7 @@ impl Render for WorkspaceView {
             PrevBlock => |this, cx| this.doc_do(cx, |d, cx| d.change_block(-1, cx)),
         });
         root.child(self.render_toolbar(cx))
+            .when(preferences_open, |s| s.child(self.render_preferences(cx)))
             .when(templates_open, |s| s.child(self.render_templates(cx)))
             .children(prompt_bar)
             .children(find_bar)
@@ -586,7 +649,7 @@ impl Render for WorkspaceView {
                             .h_full()
                             .flex_none()
                             .bg(if self.dragging_split { theme::accent() } else { theme::border() })
-                            .hover(|s| s.bg(gpui::rgb(0xb8c3d6)))
+                            .hover(|s| s.bg(theme::splitter_hover()))
                             .cursor_col_resize()
                             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_split_down)),
                     )

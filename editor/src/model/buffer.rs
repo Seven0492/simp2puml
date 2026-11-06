@@ -165,6 +165,12 @@ impl Buffer {
         self.dirty_cache.set((self.version, false));
     }
 
+    /// Texte jamais enregistré (import) : modifié tant qu'il n'est pas enregistré.
+    pub fn mark_unsaved(&mut self) {
+        self.saved_hash = text_hash(&self.text).wrapping_add(1);
+        self.dirty_cache.set((self.version, true));
+    }
+
     pub fn line_count(&self) -> usize {
         self.line_starts.len()
     }
@@ -756,54 +762,51 @@ impl Buffer {
         true
     }
 
+    /// Toutes les occurrences de `query`, sans chevauchement, insensibles à la
+    /// casse. La comparaison se fait caractère par caractère (une minuscule par
+    /// caractère) : les plages renvoyées sont toujours des positions du texte
+    /// d'origine, même quand `to_lowercase` changerait la longueur (« İ », « ẞ »).
+    pub fn find_all(&self, query: &str) -> Vec<Range<usize>> {
+        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
+        let needle: Vec<char> = query.chars().map(fold).collect();
+        let mut out = Vec::new();
+        let Some(&first) = needle.first() else { return out };
+        let hay: Vec<(usize, char)> = self.text.char_indices().map(|(i, c)| (i, fold(c))).collect();
+        let mut i = 0;
+        while i + needle.len() <= hay.len() {
+            if hay[i].1 == first && hay[i..i + needle.len()].iter().zip(&needle).all(|((_, a), b)| a == b) {
+                let end = hay.get(i + needle.len()).map_or(self.text.len(), |(b, _)| *b);
+                out.push(hay[i].0..end);
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
     /// Recherche (insensible à la casse) à partir de `from`, en bouclant.
     pub fn find(&self, query: &str, from: usize, backwards: bool) -> Option<Range<usize>> {
-        if query.is_empty() {
-            return None;
-        }
-        let hay = self.text.to_lowercase();
-        let needle = query.to_lowercase();
-        // to_lowercase peut changer les longueurs : on se replie sur une recherche exacte.
-        let (hay, needle) = if hay.len() == self.text.len() {
-            (hay, needle)
-        } else {
-            (self.text.clone(), query.to_string())
-        };
+        let all = self.find_all(query);
         if backwards {
-            let before = hay[..from.min(hay.len())].rfind(&needle);
-            let found = before.or_else(|| hay.rfind(&needle))?;
-            Some(found..found + needle.len())
+            all.iter().rev().find(|r| r.end <= from).or_else(|| all.last()).cloned()
         } else {
-            let from = from.min(hay.len());
-            let after = hay[from..].find(&needle).map(|i| i + from);
-            let found = after.or_else(|| hay.find(&needle))?;
-            Some(found..found + needle.len())
+            all.iter().find(|r| r.start >= from).or_else(|| all.first()).cloned()
         }
     }
 
+    #[cfg(test)]
     pub fn count_matches(&self, query: &str) -> usize {
-        if query.is_empty() {
-            return 0;
-        }
-        let hay = self.text.to_lowercase();
-        let needle = query.to_lowercase();
-        hay.matches(&needle).count()
+        self.find_all(query).len()
     }
 
-    /// Remplace toutes les occurrences (sensible à la casse si nécessaire).
+    /// Remplace toutes les occurrences (insensible à la casse).
     pub fn replace_all(&mut self, query: &str, with: &str) -> usize {
         if query.is_empty() {
             return 0;
         }
-        let lower = self.text.to_lowercase();
-        let needle = query.to_lowercase();
-        let use_lower = lower.len() == self.text.len();
-        let hay = if use_lower { &lower } else { &self.text };
-        let needle = if use_lower { needle } else { query.to_string() };
-        let edits: Vec<(Range<usize>, String)> = hay
-            .match_indices(&needle)
-            .map(|(i, m)| (i..i + m.len(), with.to_string()))
-            .collect();
+        let edits: Vec<(Range<usize>, String)> =
+            self.find_all(query).into_iter().map(|r| (r, with.to_string())).collect();
         let n = edits.len();
         let c = self.cursor().min(self.text.len());
         self.apply_many(edits, c..c);
@@ -947,6 +950,22 @@ mod tests {
         assert_eq!(b.text(), "Carol -> Bob\nbob -> Carol");
         b.undo();
         assert_eq!(b.text(), "Alice -> Bob\nbob -> alice");
+    }
+
+    #[test]
+    fn search_with_length_changing_case_folding() {
+        // ẞ raccourcit et İ allonge le texte passé en minuscules
+        let mut b = Buffer::new("ẞxİ x İX");
+        assert_eq!(b.find("x", 0, false), Some(3..4));
+        assert_eq!(b.find("x", 4, false), Some(7..8));
+        assert_eq!(b.count_matches("x"), 3);
+        assert_eq!(b.count_matches("İx"), 1);
+        assert_eq!(b.replace_all("x", "y"), 3);
+        assert_eq!(b.text(), "ẞyİ y İy");
+        let mut k = Buffer::new("\u{212A}elvin kelvin");
+        assert_eq!(k.count_matches("kelvin"), 2);
+        assert_eq!(k.replace_all("KELVIN", "K"), 2);
+        assert_eq!(k.text(), "K K");
     }
 
     #[test]

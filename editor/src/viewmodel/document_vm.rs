@@ -157,9 +157,8 @@ impl DocumentViewModel {
         match result {
             Ok((output, scene)) => {
                 self.render_error = None;
-                if self.block >= output.blocks.max(1) {
-                    self.block = 0;
-                }
+                // même règle que le moteur : un bloc disparu ramène au dernier
+                self.block = self.block.min(output.blocks.max(1) - 1);
                 let marks = output
                     .diagnostics
                     .iter()

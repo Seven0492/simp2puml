@@ -186,9 +186,12 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q: Vec<char> = query.to_lowercase().chars().collect();
+    // une minuscule par caractère : `to_lowercase` d'une chaîne peut changer
+    // le nombre de caractères (« İ » en donne deux) et décaler les indices
+    let fold = |ch: char| ch.to_lowercase().next().unwrap_or(ch);
+    let q: Vec<char> = query.chars().map(fold).collect();
     let c: Vec<char> = candidate.chars().collect();
-    let cl: Vec<char> = candidate.to_lowercase().chars().collect();
+    let cl: Vec<char> = c.iter().copied().map(fold).collect();
     if cl.starts_with(&q) {
         // préfixe : meilleur score, les candidats courts d'abord
         return Some(1000 - c.len() as i32 + if c.starts_with(&query.chars().collect::<Vec<_>>()) { 10 } else { 0 });
@@ -355,6 +358,14 @@ pub fn expand(insert: &str, indent: &str) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn case_folding_that_changes_length_does_not_panic() {
+        assert!(fuzzy_score("ul", "İstanbul").is_some());
+        assert!(fuzzy_score("is", "İstanbul").is_some());
+        let text = "@startuml\nclass İstanbul\nul";
+        assert!(complete(text, text.len(), false).is_some());
+    }
 
     fn labels(l: &CompletionList) -> Vec<&str> {
         l.items.iter().map(|c| c.label.as_str()).collect()

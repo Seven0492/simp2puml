@@ -99,6 +99,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-9", w::ZoomFit, None),
         KeyBinding::new("secondary-j", w::ToggleDiagnostics, None),
         KeyBinding::new("secondary-t", w::ToggleTemplates, None),
+        KeyBinding::new("secondary-,", w::TogglePreferences, None),
         KeyBinding::new("alt-pagedown", w::NextBlock, None),
         KeyBinding::new("alt-pageup", w::PrevBlock, None),
         KeyBinding::new("secondary-q", w::Quit, None),

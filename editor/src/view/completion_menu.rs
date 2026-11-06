@@ -37,7 +37,7 @@ pub fn completion_menu(menu: &CompletionMenu, anchor: Point<Pixels>, vm: Entity<
             .py(px(2.))
             .rounded_sm()
             .cursor_pointer()
-            .when(selected, |s| s.bg(gpui::rgb(0xdbe6f6)))
+            .when(selected, |s| s.bg(theme::completion_selected()))
             .when(!selected, |s| s.hover(|s| s.bg(theme::current_line())))
             .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx: &mut App| {
                 cx.stop_propagation();
@@ -72,7 +72,7 @@ pub fn completion_menu(menu: &CompletionMenu, anchor: Point<Pixels>, vm: Entity<
                 .p_1()
                 .bg(theme::surface())
                 .border_1()
-                .border_color(gpui::rgb(0xc9d0dd))
+                .border_color(theme::field_border())
                 .rounded_md()
                 .shadow_lg()
                 .font_family(theme::UI_FONT)

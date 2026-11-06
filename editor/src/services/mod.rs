@@ -2,4 +2,5 @@
 //! appelés depuis l'exécuteur d'arrière-plan).
 
 pub mod file_service;
+pub mod preferences_service;
 pub mod render_service;

@@ -3,21 +3,38 @@
 //! Comme Zed avec ses serveurs de langage, l'éditeur garde un seul processus
 //! `pumlrender --serve` vivant et lui envoie une requête par rendu, au lieu
 //! de lancer un processus à chaque frappe. Si le processus meurt, il est
-//! relancé ; si le binaire ne connaît pas `--serve`, on se replie sur un
-//! processus par rendu (`--editor`).
+//! relancé ; si le binaire ne connaît pas `--serve` (sondé au lancement), on
+//! se replie sur un processus par rendu (`--editor`).
+//!
+//! Un rendu qui dépasse `RENDER_TIMEOUT` est abandonné et son processus tué :
+//! un document qui bloque le moteur ne doit pas bloquer les autres onglets.
+//! Sous Linux, le moteur est tué avec l'éditeur (PR_SET_PDEATHSIG).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use crate::model::diagram::{RenderOutput, parse_protocol};
+
+pub const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
+const PROBE: &str = "@startuml\n@enduml\n";
+
+/// Échec d'une requête : `retry` si le processus est mort (le relancer peut
+/// suffire), faux pour un dépassement de délai (le même texte bloquerait encore).
+struct Failure {
+    message: String,
+    retry: bool,
+}
 
 struct Server {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// réponses brutes lues par un fil dédié (lecture interruptible par délai)
+    responses: Receiver<Result<Vec<u8>, String>>,
 }
 
 impl Drop for Server {
@@ -27,12 +44,58 @@ impl Drop for Server {
     }
 }
 
+/// Lit une réponse : en-têtes jusqu'à « SVG\t<n> » puis exactement n octets,
+/// ou une ligne ERROR. `Ok(None)` en fin de flux.
+fn read_response(stdout: &mut BufReader<ChildStdout>) -> Result<Option<Vec<u8>>, String> {
+    let io = |e: std::io::Error| format!("échange avec le moteur de rendu : {e}");
+    let mut raw = Vec::new();
+    loop {
+        let mut line = String::new();
+        if stdout.read_line(&mut line).map_err(io)? == 0 {
+            return Ok(None);
+        }
+        raw.extend_from_slice(line.as_bytes());
+        if let Some(n) = line.strip_prefix("SVG\t") {
+            let n: usize = n.trim().parse().map_err(|_| "longueur SVG invalide".to_string())?;
+            let mut svg = vec![0; n];
+            stdout.read_exact(&mut svg).map_err(io)?;
+            raw.extend_from_slice(&svg);
+            return Ok(Some(raw));
+        }
+        if line.starts_with("ERROR") {
+            return Ok(Some(raw));
+        }
+    }
+}
+
+/// Le moteur ne survit pas à l'éditeur, même en cas d'arrêt brutal.
+fn die_with_parent(cmd: &mut Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe extern "C" {
+            fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
+        }
+        const PR_SET_PDEATHSIG: i32 = 1;
+        const SIGKILL: u64 = 9;
+        // SAFETY : prctl est sûr entre fork et exec (aucune allocation).
+        unsafe {
+            cmd.pre_exec(|| {
+                prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cmd;
+}
+
 pub struct RenderService {
     exe: PathBuf,
     server: Mutex<Option<Server>>,
     next_id: AtomicU64,
     serve_unsupported: AtomicBool,
-    /// vrai dès qu'une requête --serve a abouti
+    /// vrai dès qu'une requête --serve a abouti (sonde comprise)
     served: AtomicBool,
 }
 
@@ -62,24 +125,25 @@ impl RenderService {
         // deux tentatives : la seconde après relance d'un processus mort
         for attempt in 0..2 {
             if guard.is_none() {
-                *guard = Some(self.spawn()?);
+                match self.spawn() {
+                    Ok(s) => *guard = Some(s),
+                    Err(e) if !self.served.load(Ordering::Relaxed) => {
+                        // la sonde a échoué : binaire sans --serve
+                        self.serve_unsupported.store(true, Ordering::Relaxed);
+                        drop(guard);
+                        return render_once(&self.exe, text, block).map_err(|e2| format!("{e} ; {e2}"));
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             let server = guard.as_mut().expect("processus démarré");
             match self.request(server, text, block) {
-                Ok(out) => {
-                    self.served.store(true, Ordering::Relaxed);
-                    return Ok(out);
-                }
-                Err(e) => {
+                Ok(out) => return Ok(out),
+                Err(f) => {
+                    // processus tué ou mort : relancé à la tentative suivante ou au prochain rendu
                     *guard = None;
-                    if attempt == 1 {
-                        // Un moteur qui a déjà répondu gère --serve : l'échec vient
-                        // de ce document (le processus sera relancé au prochain rendu).
-                        // Sinon, le binaire ne connaît probablement pas --serve.
-                        if !self.served.load(Ordering::Relaxed) {
-                            self.serve_unsupported.store(true, Ordering::Relaxed);
-                        }
-                        return render_once(&self.exe, text, block).map_err(|e2| format!("{e} ; {e2}"));
+                    if !f.retry || attempt == 1 {
+                        return Err(f.message);
                     }
                 }
             }
@@ -87,73 +151,99 @@ impl RenderService {
         unreachable!()
     }
 
+    /// Lance `pumlrender --serve` ; à la première fois, vérifie par une requête
+    /// triviale que le binaire gère ce mode.
     fn spawn(&self) -> Result<Server, String> {
-        let mut child = Command::new(&self.exe)
-            .arg("--serve")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("impossible de lancer {} : {e}", self.exe.display()))?;
+        let mut cmd = Command::new(&self.exe);
+        cmd.arg("--serve").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        die_with_parent(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("impossible de lancer {} : {e}", self.exe.display()))?;
         let stdin = child.stdin.take().ok_or("stdin indisponible")?;
-        let stdout = BufReader::new(child.stdout.take().ok_or("stdout indisponible")?);
-        Ok(Server { child, stdin, stdout })
+        let mut stdout = BufReader::new(child.stdout.take().ok_or("stdout indisponible")?);
+        let (tx, responses) = mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                let r = read_response(&mut stdout);
+                let end = !matches!(r, Ok(Some(_)));
+                if tx.send(r.and_then(|o| o.ok_or_else(|| "le moteur de rendu s'est arrêté".to_string()))).is_err() || end {
+                    break;
+                }
+            }
+        });
+        let mut server = Server { child, stdin, responses };
+        if !self.served.load(Ordering::Relaxed) {
+            self.request(&mut server, PROBE, 0).map_err(|f| f.message)?;
+            self.served.store(true, Ordering::Relaxed);
+        }
+        Ok(server)
     }
 
-    fn request(&self, server: &mut Server, text: &str, block: usize) -> Result<RenderOutput, String> {
+    fn request(&self, server: &mut Server, text: &str, block: usize) -> Result<RenderOutput, Failure> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let io = |e: std::io::Error| format!("échange avec le moteur de rendu : {e}");
+        let died = |message: String| Failure { message, retry: true };
+        let io = |e: std::io::Error| died(format!("échange avec le moteur de rendu : {e}"));
         write!(server.stdin, "RENDER {id} {block} {}\n", text.len()).map_err(io)?;
         server.stdin.write_all(text.as_bytes()).map_err(io)?;
         server.stdin.flush().map_err(io)?;
-        // en-têtes jusqu'à « SVG\t<n> », puis exactement n octets
-        let mut raw = Vec::new();
-        loop {
-            let mut line = String::new();
-            if server.stdout.read_line(&mut line).map_err(io)? == 0 {
-                return Err("le moteur de rendu s'est arrêté".into());
+        let raw = match server.responses.recv_timeout(RENDER_TIMEOUT) {
+            Ok(r) => r.map_err(died)?,
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(Failure {
+                    message: format!("rendu abandonné après {} s (le moteur ne répond plus)", RENDER_TIMEOUT.as_secs()),
+                    retry: false,
+                });
             }
-            raw.extend_from_slice(line.as_bytes());
-            if let Some(n) = line.strip_prefix("SVG\t") {
-                let n: usize = n.trim().parse().map_err(|_| "longueur SVG invalide")?;
-                let mut svg = vec![0; n];
-                server.stdout.read_exact(&mut svg).map_err(io)?;
-                raw.extend_from_slice(&svg);
-                break;
-            }
-            if line.starts_with("ERROR") {
-                break;
-            }
-        }
-        let out = parse_protocol(&raw)?;
+            Err(RecvTimeoutError::Disconnected) => return Err(died("le moteur de rendu s'est arrêté".into())),
+        };
+        let out = parse_protocol(&raw).map_err(died)?;
         if out.id != id {
-            return Err(format!("réponse désynchronisée ({} au lieu de {id})", out.id));
+            return Err(died(format!("réponse désynchronisée ({} au lieu de {id})", out.id)));
         }
         Ok(out)
     }
 }
 
-/// Repli : un processus par rendu.
+/// Repli : un processus par rendu (même délai maximal).
 fn render_once(exe: &Path, text: &str, block: usize) -> Result<RenderOutput, String> {
-    let mut child = Command::new(exe)
-        .arg("--editor")
+    let mut cmd = Command::new(exe);
+    cmd.arg("--editor")
         .arg(format!("--block={}", block + 1))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("impossible de lancer {} : {e}", exe.display()))?;
+        .stderr(Stdio::piped());
+    die_with_parent(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("impossible de lancer {} : {e}", exe.display()))?;
     let mut stdin = child.stdin.take().ok_or("stdin indisponible")?;
     let data = text.as_bytes().to_vec();
-    // écriture dans un fil séparé pour éviter un interblocage sur de gros SVG
+    // écriture et lectures dans des fils séparés : pas d'interblocage sur de gros SVG
     std::thread::spawn(move || {
         let _ = stdin.write_all(&data);
     });
-    let out = child.wait_with_output().map_err(|e| format!("échec du moteur de rendu : {e}"))?;
-    if !out.status.success() && out.stdout.is_empty() {
-        return Err(format!("le moteur de rendu a échoué : {}", String::from_utf8_lossy(&out.stderr).trim()));
+    let collect = |mut r: Box<dyn Read + Send>| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = r.read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let stdout = collect(Box::new(child.stdout.take().ok_or("stdout indisponible")?));
+    let stderr = collect(Box::new(child.stderr.take().ok_or("stderr indisponible")?));
+    let out = match stdout.recv_timeout(RENDER_TIMEOUT) {
+        Ok(out) => out,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("rendu abandonné après {} s (le moteur ne répond plus)", RENDER_TIMEOUT.as_secs()));
+        }
+    };
+    let status = child.wait().map_err(|e| format!("échec du moteur de rendu : {e}"))?;
+    if !status.success() && out.is_empty() {
+        let err = stderr.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
+        return Err(format!("le moteur de rendu a échoué : {}", String::from_utf8_lossy(&err).trim()));
     }
-    parse_protocol(&out.stdout)
+    parse_protocol(&out)
 }
 
 fn exe_name() -> &'static str {
@@ -180,7 +270,10 @@ fn locate_renderer() -> Option<PathBuf> {
         }
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(exe_name())).find(|p| p.is_file())
+    std::env::split_paths(&path)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join(exe_name()))
+        .find(|p| p.is_file())
 }
 
 #[cfg(test)]
@@ -199,6 +292,32 @@ mod tests {
         let b = service.render("@startmindmap\n* racine\n@endmindmap\n", 0).unwrap();
         assert_eq!(b.kind, "mindmap");
         assert!(!service.serve_unsupported.load(Ordering::Relaxed));
+    }
+
+    /// Faux moteur : répond à la sonde, puis ne répond plus.
+    #[cfg(unix)]
+    #[test]
+    fn a_stuck_renderer_is_abandoned_after_the_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("puml-editor-bloque-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("pumlrender");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nread h; read a; read b\n\
+             printf 'PUMLRENDER 1\\nID\\t1\\nKIND\\tempty\\nBLOCKS\\t1\\nSIZE\\t1\\t1\\nSVG\\t0\\n'\n\
+             exec sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let service = RenderService::new(script);
+        let start = std::time::Instant::now();
+        let err = service.render("@startuml\nA -> B\n@enduml\n", 0).unwrap_err();
+        assert!(err.contains("abandonné"), "{err}");
+        assert!(start.elapsed() < RENDER_TIMEOUT + Duration::from_secs(3));
+        // le mode persistant reste en place (le moteur gère --serve)
+        assert!(!service.serve_unsupported.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

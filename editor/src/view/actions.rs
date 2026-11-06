@@ -24,6 +24,6 @@ actions!(
         ExportSvg, ImportSimp, ExportSimp,
         Find, FindNext, FindPrev, ReplaceAll,
         ZoomIn, ZoomOut, ZoomReset, ZoomFit,
-        ToggleDiagnostics, ToggleTemplates, NextBlock, PrevBlock, Quit,
+        ToggleDiagnostics, ToggleTemplates, TogglePreferences, NextBlock, PrevBlock, Quit,
     ]
 );

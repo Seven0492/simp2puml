@@ -69,12 +69,16 @@ pub struct EditorViewModel {
     pub line_marks: Vec<LineMark>,
     /// Résultats de recherche à surligner.
     pub highlights: Vec<Range<usize>>,
+    /// requête de recherche ouverte ; les surlignages suivent chaque modification
+    search_query: String,
     pub scroll_x: f32,
     pub scroll_y: f32,
     viewport: (f32, f32),
     /// Le curseur doit être ramené dans la zone visible au prochain affichage.
     autoscroll: bool,
     pub completions: Option<CompletionMenu>,
+    /// Préférence : ouvrir le menu pendant la frappe (sinon Ctrl+Espace seulement).
+    pub autocomplete: bool,
 }
 
 impl EventEmitter<EditorEvent> for EditorViewModel {}
@@ -89,11 +93,13 @@ impl EditorViewModel {
             placeholder: SharedString::from(placeholder.to_string()),
             line_marks: Vec::new(),
             highlights: Vec::new(),
+            search_query: String::new(),
             scroll_x: 0.0,
             scroll_y: 0.0,
             viewport: (0.0, 0.0),
             autoscroll: true,
             completions: None,
+            autocomplete: true,
         }
     }
 
@@ -112,6 +118,9 @@ impl EditorViewModel {
     fn changed(&mut self, cx: &mut Context<Self>) {
         if let Some(line) = self.buffer.take_changed_from() {
             self.syntax.invalidate_from(line);
+        }
+        if !self.search_query.is_empty() {
+            self.highlights = self.buffer.find_all(&self.search_query);
         }
         self.autoscroll = true;
         cx.emit(EditorEvent::Changed);
@@ -201,7 +210,7 @@ impl EditorViewModel {
         self.marked_range = (mark && !text.is_empty()).then(|| range.start..range.start + text.len());
         // frappe d'un caractère de mot, d'un « @ » ou d'une flèche : (ré)ouvrir le menu
         let typing = !mark && !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || "_@-.<>|*".contains(c));
-        if typing && !self.single_line {
+        if typing && !self.single_line && (self.autocomplete || self.completions.is_some()) {
             self.refresh_completions(false);
         } else {
             self.completions = None;
@@ -318,7 +327,7 @@ impl EditorViewModel {
 
     pub fn paste(&mut self, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
-            self.replace_text(None, &text.replace("\r\n", "\n"), false, cx);
+            self.replace_text(None, &text.replace("\r\n", "\n").replace('\r', "\n"), false, cx);
         }
     }
 
@@ -461,17 +470,8 @@ impl EditorViewModel {
 
     /// Plages de toutes les occurrences (pour le surlignage de recherche).
     pub fn set_search(&mut self, query: &str, cx: &mut Context<Self>) {
-        self.highlights.clear();
-        if !query.is_empty() {
-            let mut from = 0;
-            while let Some(r) = self.buffer.find(query, from, false) {
-                if r.start < from || self.highlights.len() >= 5000 {
-                    break;
-                }
-                from = r.end.max(r.start + 1);
-                self.highlights.push(r);
-            }
-        }
+        self.search_query = query.to_string();
+        self.highlights = self.buffer.find_all(query);
         cx.notify();
     }
 

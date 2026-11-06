@@ -100,6 +100,8 @@ impl Render for PreviewView {
         } else {
             None
         };
+        // un rendu précédent reste affiché, mais l'échec du rendu courant est signalé
+        let stale_error = doc.rendering.is_some().then(|| doc.render_error.clone()).flatten();
         let hovering = doc.preview.hovered_region.is_some();
         let root = div()
             .id("preview")
@@ -120,7 +122,23 @@ impl Render for PreviewView {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .relative()
             .child(SceneElement { view: cx.entity() })
+            .when_some(stale_error, |s, e| {
+                s.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .px_3()
+                        .py_1()
+                        .bg(theme::error_banner())
+                        .text_size(px(12.5))
+                        .text_color(theme::severity(crate::model::diagram::Severity::Error))
+                        .child(format!("Rendu impossible (aperçu précédent affiché) : {e}")),
+                )
+            })
             .into_any_element()
     }
 }
@@ -155,7 +173,7 @@ impl Transform {
 }
 
 fn hsla(c: Color) -> Hsla {
-    gpui::rgba(c.0).into()
+    theme::diagram(gpui::rgba(c.0).into())
 }
 
 impl Element for SceneElement {
@@ -207,8 +225,8 @@ impl Element for SceneElement {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             // feuille : ombre légère et fond
             let sheet = Bounds::new(t.point(0.0, 0.0), size(t.len(scene.width), t.len(scene.height)));
-            window.paint_quad(fill(Bounds::new(sheet.origin + point(px(0.), px(2.)), sheet.size), gpui::rgba(0x0000000d)));
-            window.paint_quad(fill(sheet, theme::surface()));
+            window.paint_quad(fill(Bounds::new(sheet.origin + point(px(0.), px(2.)), sheet.size), theme::sheet_shadow()));
+            window.paint_quad(fill(sheet, theme::sheet()));
             paint_scene(&scene, &visible, t, window, cx);
             if let Some(r) = p.hovered_region.and_then(|i| output.regions.get(i)) {
                 let b = Bounds::new(t.point(r.x - 2.0, r.y - 2.0), size(t.len(r.w + 4.0), t.len(r.h + 4.0)));

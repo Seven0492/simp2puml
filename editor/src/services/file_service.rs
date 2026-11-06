@@ -44,25 +44,69 @@ fn write_temp(path: &Path, content: &str) -> Result<PathBuf, String> {
     Ok(tmp)
 }
 
+/// Synchronise le dossier après un renommage (best effort).
+fn sync_parent(path: &Path) {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Ok(d) = fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+}
+
 /// Enregistre le document édité (remplacement atomique du fichier ouvert).
+/// Un lien symbolique est suivi : c'est sa cible qui est remplacée, et le lien
+/// reste un lien. Les droits du fichier existant sont conservés ; un fichier en
+/// lecture seule est refusé plutôt que remplacé.
 pub fn save_document(path: &Path, content: &str) -> Result<(), String> {
-    let tmp = write_temp(path, content)?;
-    fs::rename(&tmp, path).map_err(|e| {
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let existing = fs::metadata(&target).ok();
+    if let Some(meta) = &existing {
+        if meta.permissions().readonly() {
+            return Err(format!("{} : fichier en lecture seule", path.display()));
+        }
+    }
+    let tmp = write_temp(&target, content)?;
+    let cleanup = |e: String| {
         let _ = fs::remove_file(&tmp);
-        format!("{} : {e}", path.display())
-    })
+        e
+    };
+    if let Some(meta) = &existing {
+        fs::set_permissions(&tmp, meta.permissions()).map_err(|e| cleanup(format!("{} : {e}", tmp.display())))?;
+    }
+    fs::rename(&tmp, &target).map_err(|e| cleanup(format!("{} : {e}", path.display())))?;
+    sync_parent(&target);
+    Ok(())
 }
 
 /// Écrit une nouvelle sortie ; refuse d'écraser un fichier existant.
 pub fn write_new(path: &Path, content: &str) -> Result<(), String> {
-    if path.exists() {
+    if path.exists() || path.is_symlink() {
         return Err(format!("la sortie existe déjà : {}", path.display()));
     }
     let tmp = write_temp(path, content)?;
     // hard_link échoue si la cible est apparue entre-temps : jamais d'écrasement
-    let r = fs::hard_link(&tmp, path).map_err(|e| format!("{} : {e}", path.display()));
+    let linked = fs::hard_link(&tmp, path);
     let _ = fs::remove_file(&tmp);
-    r
+    match linked {
+        Ok(()) => {
+            sync_parent(path);
+            Ok(())
+        }
+        // FAT, exFAT, certains montages réseau : pas de liens durs. Création
+        // exclusive directe (O_EXCL) : toujours sans écrasement.
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported || matches!(e.raw_os_error(), Some(1 | 95)) => {
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|e| format!("{} : {e}", path.display()))?;
+            f.write_all(content.as_bytes()).and_then(|_| f.sync_all()).map_err(|e| {
+                let _ = fs::remove_file(path);
+                format!("{} : {e}", path.display())
+            })
+        }
+        Err(e) => Err(format!("{} : {e}", path.display())),
+    }
 }
 
 struct TempDir(PathBuf);
@@ -74,7 +118,11 @@ impl TempDir {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let p = std::env::temp_dir().join(format!("puml-editor-{}-{nanos}", std::process::id()));
-        fs::create_dir(&p).map_err(|e| format!("{} : {e}", p.display()))?;
+        // dossier privé : le texte du diagramme n'est pas lisible par les autres comptes
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&p).map_err(|e| format!("{} : {e}", p.display()))?;
         Ok(Self(p))
     }
 }
@@ -85,22 +133,22 @@ impl Drop for TempDir {
     }
 }
 
-/// Commande du convertisseur : $SIMP2PUML, `simp2puml` du PATH, sinon
-/// `python3 -m simp2puml` (avec src/ du dépôt si présent).
+/// Commande du convertisseur : $SIMP2PUML, `simp2puml` à côté de l'exécutable
+/// ou dans le PATH (entrées absolues seulement), sinon `python3 -P -m simp2puml`
+/// (avec src/ du dépôt si présent ; `-P` évite d'importer le dossier courant).
 fn converter() -> Command {
     if let Some(p) = std::env::var_os("SIMP2PUML") {
         return Command::new(p);
     }
-    if let Some(path) = std::env::var_os("PATH") {
-        for d in std::env::split_paths(&path) {
-            let c = d.join("simp2puml");
-            if c.is_file() {
-                return Command::new(c);
-            }
-        }
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("simp2puml")));
+    let in_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).map(|d| d.join("simp2puml")).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if let Some(c) = beside.into_iter().chain(in_path).find(|c| c.is_file()) {
+        return Command::new(c);
     }
     let mut cmd = Command::new("python3");
-    cmd.arg("-m").arg("simp2puml");
+    cmd.arg("-P").arg("-m").arg("simp2puml");
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);
         for _ in 0..5 {
@@ -192,6 +240,44 @@ mod tests {
         assert_eq!(read_text(&p).unwrap(), "3");
         let leftovers = fs::read_dir(&dir.0).unwrap().count();
         assert_eq!(leftovers, 1);
+    }
+
+    /// Premier enregistrement des préférences : le fichier n'existe pas encore.
+    #[test]
+    fn save_creates_a_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.0.join("preferences.conf");
+        save_document(&path, "theme = dark\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theme = dark\n");
+        save_document(&path, "theme = light\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theme = light\n");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1, "aucun fichier temporaire ne doit rester");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_links_and_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = TempDir::new().unwrap();
+        assert_eq!(fs::metadata(&dir.0).unwrap().permissions().mode() & 0o777, 0o700);
+        let target = dir.0.join("cible.puml");
+        let link = dir.0.join("lien.puml");
+        fs::write(&target, "a").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &link).unwrap();
+        save_document(&link, "b").unwrap();
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "b");
+        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(save_document(&target, "c").is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "b");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        // un lien pendant n'est jamais remplacé par une nouvelle sortie
+        let dangling = dir.0.join("pendant.svg");
+        symlink(dir.0.join("absent"), &dangling).unwrap();
+        assert!(write_new(&dangling, "x").is_err());
+        assert!(!dir.0.join("absent").exists());
     }
 
     #[test]
