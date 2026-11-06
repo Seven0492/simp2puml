@@ -117,7 +117,6 @@ Exec=sh "$exec_path" %f
 Icon=$ASSETS/icon-256.png
 Terminal=false
 Categories=Development;Graphics;
-StartupWMClass=Simp2puml
 EOF
     mv "$entry.tmp" "$entry"
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1 || true

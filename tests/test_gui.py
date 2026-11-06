@@ -1,10 +1,12 @@
 """Logique de l'interface graphique ; la fenêtre Tk n'est testée que si un affichage existe."""
 from pathlib import Path
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from simp2puml import gui
+from simp2puml import gui, launcher, preferences
 
 PUML = """@startuml
 title Essai
@@ -34,7 +36,7 @@ def write(path: Path, text: str) -> Path:
 
 def test_run_converts_in_memory_without_writing(tmp_path):
     source = write(tmp_path / 'essai.puml', PUML)
-    result = gui.run(gui.Request(source, gui.default_target(source)))
+    result = gui.run(gui.Request(source, 'simp'))
     assert result.publishable and '<sim-project' in result.content
     assert any('expérimentale' in w for w in result.warnings)
     assert 'Classes : 2' in result.summary
@@ -184,7 +186,7 @@ def test_editor_edits_drive_preview_save_and_revert(tmp_path, monkeypatch):
 def test_read_errors_are_reported(tmp_path):
     assert gui.run(gui.Request(tmp_path / 'absent.simp', 'puml')).error
     assert gui.run(gui.Request(write(tmp_path / 'x.txt', ''), 'puml')).error
-    assert gui.run(gui.Request(write(tmp_path / 'x.puml', PUML), 'puml')).error
+    assert gui.run(gui.Request(write(tmp_path / 'x.simp', two_views()), 'simp')).error
 
 
 def test_window_loads_converts_and_restricts_targets(tmp_path):
@@ -220,5 +222,172 @@ def test_window_loads_converts_and_restricts_targets(tmp_path):
 
 
 def test_main_without_window_options(capsys):
-    assert gui.main(['--version']) == 0
+    assert launcher.main(['--version']) == 0
     assert 'simp2puml-gui' in capsys.readouterr().out
+
+
+FIXTURE = Path(__file__).parent / 'data' / 'preferences.conf'
+
+
+@pytest.fixture
+def config(tmp_path, monkeypatch):
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    return tmp_path / 'config' / 'simp2puml' / 'preferences.conf'
+
+
+def test_new_interface_is_the_default_and_invalid_values_are_ignored(config):
+    assert preferences.interface() == preferences.EDITOR
+    config.parent.mkdir(parents=True)
+    config.write_text('interface = violette\n', encoding='utf-8')
+    assert preferences.interface() == preferences.EDITOR
+
+
+def test_shared_fixture_and_other_settings_survive_a_change(config):
+    text = FIXTURE.read_text(encoding='utf-8')
+    assert preferences.parse_interface(text) == preferences.CLASSIC  # Même fichier que les tests Rust.
+    config.parent.mkdir(parents=True)
+    config.write_text(text, encoding='utf-8')
+    preferences.set_interface(preferences.EDITOR)
+    saved = config.read_text(encoding='utf-8')
+    assert preferences.parse_interface(saved) == preferences.EDITOR
+    assert saved.count('interface =') == 1
+    assert 'theme = dark' in saved and 'code_size = 18' in saved and saved.startswith('# Lu par')
+    assert [p.name for p in config.parent.iterdir()] == ['preferences.conf'], 'aucun fichier temporaire'
+
+
+def test_choice_is_saved_through_a_symlink(config, tmp_path):
+    real = tmp_path / 'reel.conf'
+    real.write_text('theme = dark\n', encoding='utf-8')
+    config.parent.mkdir(parents=True)
+    config.symlink_to(real)
+    preferences.set_interface(preferences.CLASSIC)
+    assert config.is_symlink()
+    assert 'interface = classic' in real.read_text(encoding='utf-8')
+
+
+def test_launcher_opens_the_new_interface_by_default(config, monkeypatch):
+    seen = []
+    monkeypatch.setattr(launcher.interfaces, 'find_editor', lambda: Path('/x/puml-editor'))
+    monkeypatch.setattr(launcher.interfaces, 'replace_process', lambda exe, files: seen.append((exe, files)) or True)
+    monkeypatch.setattr(gui, 'main', lambda _args: pytest.fail('interface classique ouverte'))
+    assert launcher.main(['a.puml', 'b.puml']) == 0
+    assert seen == [(Path('/x/puml-editor'), ['a.puml', 'b.puml'])]
+
+
+def test_launcher_uses_the_classic_interface_when_chosen_or_when_the_editor_is_missing(config, monkeypatch):
+    opened, classic = [], []
+    monkeypatch.setattr(gui, 'main', lambda args: classic.append(args) or 7)
+    monkeypatch.setattr(launcher.interfaces, 'replace_process', lambda *_: opened.append('editeur') or True)
+
+    monkeypatch.setattr(launcher.interfaces, 'find_editor', lambda: None)
+    assert launcher.main(['a.puml']) == 7, 'éditeur absent : repli sur la classique'
+    monkeypatch.setattr(launcher.interfaces, 'find_editor', lambda: Path('/x/puml-editor'))
+    assert launcher.main(['--interface', 'classic', 'b.puml']) == 7, 'demande explicite'
+    preferences.set_interface(preferences.CLASSIC)
+    assert launcher.main([]) == 7, 'préférence'
+    assert opened == [] and classic == [['a.puml'], ['b.puml'], []]
+    assert launcher.main(['--interface', 'editor']) == 0, 'demande explicite plus forte que la préférence'
+    assert opened == ['editeur']
+    assert launcher.main(['--interface', 'violette']) == 2
+
+
+def test_failed_editor_start_falls_back_to_classic(config, monkeypatch):
+    monkeypatch.setattr(gui, 'main', lambda _args: 7)
+    monkeypatch.setattr(launcher.interfaces, 'find_editor', lambda: Path('/x/puml-editor'))
+    monkeypatch.setattr(launcher.interfaces, 'replace_process', lambda *_: False)
+    assert launcher.main([]) == 7
+
+
+def test_starting_the_new_interface_does_not_load_the_classic_one():
+    # Le lancement par défaut ne doit payer ni Tkinter ni le convertisseur.
+    code = ('import sys; from simp2puml import launcher; '
+            'sys.exit(any(m in sys.modules for m in ("tkinter", "simp2puml.gui", "simp2puml.cli")))')
+    assert subprocess.run([sys.executable, '-c', code], check=False).returncode == 0
+
+
+def test_find_editor_looks_beside_the_link_without_path(tmp_path, monkeypatch):
+    # Installation typique : ~/.local/bin/simp2puml-gui est un lien, puml-editor est à côté de lui.
+    bin_dir, tool = tmp_path / 'bin', tmp_path / 'outil'
+    bin_dir.mkdir()
+    tool.mkdir()
+    (tool / 'simp2puml-gui').write_text('', encoding='utf-8')
+    (bin_dir / 'simp2puml-gui').symlink_to(tool / 'simp2puml-gui')
+    editor = bin_dir / 'puml-editor'
+    editor.write_text('', encoding='utf-8')
+    editor.chmod(0o755)
+    monkeypatch.delenv('PUML_EDITOR', raising=False)
+    monkeypatch.setenv('PATH', '/nulle/part')
+    monkeypatch.setattr(sys, 'argv', [str(bin_dir / 'simp2puml-gui')])
+    assert gui.interfaces.find_editor() == editor
+
+
+def test_find_editor_honours_the_override(tmp_path, monkeypatch):
+    monkeypatch.setenv('PUML_EDITOR', str(tmp_path / 'absent'))
+    assert gui.interfaces.find_editor() is None, 'une demande explicite invalide ne prend pas un autre binaire'
+    exe = tmp_path / 'puml-editor'
+    exe.write_text('', encoding='utf-8')
+    monkeypatch.setenv('PUML_EDITOR', str(exe))
+    assert gui.interfaces.find_editor() == exe
+
+
+def test_start_editor_reports_an_immediate_failure(tmp_path):
+    script = tmp_path / 'casse'
+    script.write_text('#!/bin/sh\necho "panne" >&2\nexit 3\n', encoding='utf-8')
+    script.chmod(0o755)
+    assert gui.interfaces.start_editor(script, []) == 'panne'
+    assert gui.interfaces.start_editor(tmp_path / 'absent', []).startswith('impossible de lancer')
+
+
+def test_plantuml_source_is_shown_as_is(tmp_path):
+    source = write(tmp_path / 'a.puml', '@startuml\npackage "P" {\nclass A\n}\n@enduml\n')
+    assert gui.default_target(source) == 'puml'
+    result = gui.run(gui.Request(source, 'puml'))
+    assert result.publishable and 'package "P"' in result.content
+    assert gui.run(gui.Request(write(tmp_path / 'b.simp', two_views()), 'simp')).error is not None
+    output = tmp_path / 'copie.puml'
+    assert gui.save(gui.Request(source, 'puml'), output).saved == output
+    assert gui.save(gui.Request(source, 'puml'), source).error  # Jamais la source elle-même.
+
+
+def test_classic_preferences_window_switches_to_the_new_interface(tmp_path, config, monkeypatch):
+    tk = pytest.importorskip('tkinter')
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f'affichage indisponible : {exc}')
+    root.withdraw()
+    closed = False
+    try:
+        source = write(tmp_path / 'a.puml', '@startuml\nclass A\n@enduml\n')
+        app = gui.App(root, source)
+        while app._busy:
+            root.update()
+            app._poll()
+        assert 'class A' in app.editor_text()
+
+        # Éditeur absent : la nouvelle interface est grisée, rien n'est enregistré.
+        monkeypatch.setattr(gui.interfaces, 'find_editor', lambda: None)
+        app.open_preferences()
+        app.preferences_window.withdraw()
+        assert not app.switch_interface(preferences.EDITOR)
+        assert not config.exists()
+        app.preferences_window.destroy()
+
+        # Échec du démarrage : le choix ne change pas et la fenêtre reste.
+        monkeypatch.setattr(gui.interfaces, 'find_editor', lambda: Path('/x/puml-editor'))
+        monkeypatch.setattr(gui.interfaces, 'start_editor', lambda *_: 'panne')
+        app.open_preferences()
+        app.preferences_window.withdraw()
+        assert not app.switch_interface(preferences.EDITOR)
+        assert 'panne' in app.status_var.get() or not config.exists()
+        assert not config.exists()
+
+        started = []
+        monkeypatch.setattr(gui.interfaces, 'start_editor', lambda exe, files: started.append(files))
+        assert app.switch_interface(preferences.EDITOR)
+        closed = True
+        assert started == [[str(source)]], 'la nouvelle interface reçoit le fichier ouvert'
+        assert preferences.interface() == preferences.EDITOR and config.exists()
+    finally:
+        if not closed:
+            root.destroy()

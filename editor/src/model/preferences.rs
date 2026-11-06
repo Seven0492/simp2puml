@@ -40,11 +40,33 @@ impl ThemeChoice {
     }
 }
 
+/// Interface graphique ouverte au lancement ; le choix est commun aux deux
+/// interfaces (`src/simp2puml/preferences.py` lit et écrit la même clé).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterfaceChoice {
+    /// la nouvelle interface (cet éditeur)
+    Editor,
+    /// l'interface classique, en Tkinter
+    Classic,
+}
+
+impl InterfaceChoice {
+    const ALL: [InterfaceChoice; 2] = [InterfaceChoice::Editor, InterfaceChoice::Classic];
+
+    fn key(self) -> &'static str {
+        match self {
+            InterfaceChoice::Editor => "editor",
+            InterfaceChoice::Classic => "classic",
+        }
+    }
+}
+
 pub const MIN_CODE_SIZE: u32 = 10;
 pub const MAX_CODE_SIZE: u32 = 28;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
+    pub interface: InterfaceChoice,
     pub theme: ThemeChoice,
     /// En thème sombre, adapter les couleurs du diagramme (sinon feuille claire).
     pub adapt_diagram: bool,
@@ -56,7 +78,7 @@ pub struct Preferences {
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true, code_size: 14 }
+        Self { interface: InterfaceChoice::Editor, theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true, code_size: 14 }
     }
 }
 
@@ -84,6 +106,7 @@ impl Preferences {
             };
             let (k, v) = (k.trim(), v.trim());
             let ok = match k {
+                "interface" => InterfaceChoice::ALL.iter().find(|c| c.key() == v).map(|c| p.interface = *c).is_some(),
                 "theme" => ThemeChoice::ALL.iter().find(|t| t.key() == v).map(|t| p.theme = *t).is_some(),
                 "adapt_diagram" => parse_bool(v).map(|b| p.adapt_diagram = b).is_some(),
                 "autocomplete" => parse_bool(v).map(|b| p.autocomplete = b).is_some(),
@@ -104,7 +127,9 @@ impl Preferences {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# Préférences de l'éditeur simp2puml\n\
+            "# Préférences de simp2puml, communes aux deux interfaces\n\
+             # interface : editor (nouvelle) ou classic\n\
+             interface = {}\n\
              # theme : system, light ou dark\n\
              theme = {}\n\
              # en thème sombre, adapter les couleurs du diagramme (sinon feuille claire)\n\
@@ -113,6 +138,7 @@ impl Preferences {
              autocomplete = {}\n\
              # taille du texte de l'éditeur, de {MIN_CODE_SIZE} à {MAX_CODE_SIZE}\n\
              code_size = {}\n",
+            self.interface.key(),
             self.theme.key(),
             self.adapt_diagram,
             self.autocomplete,
@@ -127,7 +153,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_defaults() {
-        let p = Preferences { theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
+        let p = Preferences { interface: InterfaceChoice::Classic, theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
         assert_eq!(Preferences::parse(&p.to_text()), (p, vec![]));
         assert_eq!(Preferences::parse("").0, Preferences::default());
     }
@@ -139,6 +165,23 @@ mod tests {
         assert!(!p.autocomplete);
         assert_eq!(ignored.len(), 3);
         assert!(ignored[0].starts_with("ligne 1"));
+    }
+
+    /// Fichier lu aussi par les tests Python : les deux interfaces s'accordent sur le format.
+    #[test]
+    fn shared_fixture_is_read_like_the_python_interface() {
+        let text = include_str!("../../../tests/data/preferences.conf");
+        let (p, ignored) = Preferences::parse(text);
+        assert_eq!(ignored, Vec::<String>::new());
+        assert_eq!(p.interface, InterfaceChoice::Classic);
+        assert_eq!(p.theme, ThemeChoice::Dark);
+        assert_eq!(p.code_size, 18);
+    }
+
+    #[test]
+    fn new_interface_is_the_default() {
+        assert_eq!(Preferences::default().interface, InterfaceChoice::Editor);
+        assert_eq!(Preferences::parse("interface = violette\n").0.interface, InterfaceChoice::Editor);
     }
 
     #[test]

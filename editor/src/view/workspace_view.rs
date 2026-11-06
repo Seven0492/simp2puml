@@ -169,6 +169,22 @@ impl WorkspaceView {
                 })
                 .detach();
             }
+            WorkspaceEvent::ConfirmSwitch { names } => {
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    "Changer d'interface sans enregistrer ?",
+                    Some(&format!("Les modifications seront perdues : {}", names.join(", "))),
+                    &["Changer sans enregistrer", "Annuler"],
+                    cx,
+                );
+                let vm = self.vm.clone();
+                cx.spawn(async move |_, cx| {
+                    if let Ok(0) = answer.await {
+                        vm.update(cx, |vm, cx| vm.launch_classic(cx)).ok();
+                    }
+                })
+                .detach();
+            }
             WorkspaceEvent::ConfirmOverwrite { document, path } => {
                 let answer = window.prompt(
                     PromptLevel::Warning,
@@ -322,6 +338,11 @@ impl WorkspaceView {
             .bg(theme::secondary_bar())
             .border_b_1()
             .border_color(theme::border())
+            .child(label("Interface :"))
+            // cette fenêtre est la nouvelle interface : le choix courant est toujours celui-ci
+            .child(choice("pref-interface-editor", "Nouvelle", true).on_click(self.with_vm(|vm, cx| vm.stay_on_editor(cx), cx)))
+            .child(choice("pref-interface-classic", "Classique", false).on_click(self.with_vm(|vm, cx| vm.switch_to_classic(cx), cx)))
+            .child(separator())
             .child(label("Thème :"))
             .children(ThemeChoice::ALL.iter().map(|&t| {
                 choice(format!("pref-theme-{}", t.label()), t.label(), p.theme == t)
@@ -623,8 +644,8 @@ impl Render for WorkspaceView {
 
         let root = div()
             .id("workspace")
+            // pas de `track_focus` ici : un clic dans une barre d'outils laisse le focus à l'éditeur
             .key_context("Workspace")
-            .track_focus(&self.focus_handle)
             .size_full()
             .flex()
             .flex_col()

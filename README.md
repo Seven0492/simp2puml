@@ -79,9 +79,9 @@ Le mode strict refuse aussi toute génération SIMP, car celle-ci émet toujours
 
 ## Interface graphique
 
-L’installation fournit aussi `simp2puml-gui` (ou `python -m simp2puml.gui [fichier]`), une fenêtre Tkinter sans dépendance supplémentaire. Elle exige un Python livré avec Tk : c’est le cas des installateurs Windows et macOS de python.org ; sous Linux, installer le paquet de la distribution (`python3-tk` sous Debian/Ubuntu, `python3-tkinter` sous Fedora).
+L’installation fournit aussi `simp2puml-gui`, qui ouvre l’interface choisie dans les préférences (voir « Éditeur simp2puml » plus bas). L’interface classique décrite ici s’ouvre directement avec `python -m simp2puml.gui [fichier]` : une fenêtre Tkinter sans dépendance supplémentaire. Elle exige un Python livré avec Tk : c’est le cas des installateurs Windows et macOS de python.org ; sous Linux, installer le paquet de la distribution (`python3-tk` sous Debian/Ubuntu, `python3-tkinter` sous Fedora).
 
-- **Ouvrir…** (Ctrl+O) choisit une source `.simp` ou `.puml` ; le format cible opposé est présélectionné. Pour un projet SIMP, la liste propose chaque vue (nom et type) et, s’il y en a plusieurs, l’équivalent de `--all`, qui force la sortie PlantUML.
+- **Ouvrir…** (Ctrl+O) choisit une source `.simp` ou `.puml` ; le résultat PlantUML est présélectionné (un `.puml` est montré tel quel, sans conversion ; choisir SIMP ou Atelier pour le convertir). Pour un projet SIMP, la liste propose chaque vue (nom et type) et, s’il y en a plusieurs, l’équivalent de `--all`, qui force la sortie PlantUML.
 - Chaque changement d’option relance la conversion en mémoire ; les onglets montrent le résultat, les avertissements et le résumé de la CLI. **Recharger** (F5) relit la source après une modification externe.
 - **Mode strict** se comporte comme `--strict` : le résultat reste consultable, mais ne peut pas être enregistré tant que des avertissements existent.
 - **Enregistrer sous…** (Ctrl+S) relit et reconvertit la source avant la publication atomique. Comme la CLI, l’interface refuse d’écrire sur la source ou sur un fichier existant : choisir un autre nom plutôt que remplacer un document.
@@ -225,7 +225,9 @@ install -Dm644 editor/simp2puml.desktop ~/.local/share/applications/simp2puml.de
 update-desktop-database ~/.local/share/applications
 ```
 
-`simp2puml-linux.sh` installe l'interface Tkinter sous le même nom de fichier d'entrée de menu : le dernier installé remplace l'autre.
+Deux interfaces partagent le convertisseur et le fichier de préférences : la nouvelle (cet éditeur, par défaut) et l'interface classique (Tkinter, décrite plus haut). `simp2puml-gui`, l'entrée de menu et les lanceurs ouvrent celle qui est choisie. Pour changer : **Préférences** dans l'une ou l'autre (`Ctrl+,`) ; le choix s'applique aussitôt, le fichier ouvert suit, et une confirmation est demandée si du travail serait perdu. `simp2puml-gui --interface editor|classic` force un lancement sans changer le choix. Si le binaire `puml-editor` n'est pas installé, l'interface classique prend le relais. Il est cherché dans `$PUML_EDITOR`, à côté du script, dans `editor/target/release/` du dépôt, puis dans le `PATH`.
+
+Limite : l'aperçu dépend de l'interface. La nouvelle utilise le moteur natif `pumlrender` (instantané, sans dépendance, rendu approché) et la classique le moteur officiel PlantUML (fidèle, avec Java ou son binaire natif). Le thème et la taille du texte ne concernent que la nouvelle interface.
 
 L'éditeur cherche `pumlrender` dans `$PUMLRENDER`, à côté de l'exécutable ou dans `renderer/bin/` d'un dossier parent (dépôt), puis dans les entrées absolues du `PATH`. Le moteur s'utilise aussi seul : `pumlrender diagramme.puml -o diagramme.svg` (une sortie existante, même un lien symbolique, est refusée), `pumlrender --check diagramme.puml` pour les seuls diagnostics. `--serve` est le mode persistant utilisé par l'éditeur.
 
@@ -233,7 +235,7 @@ Fichiers : « Enregistrer » remplace atomiquement le fichier ouvert (un lien sy
 
 Raccourcis principaux (`Ctrl` sous Linux/Windows, `Cmd` sous macOS) : `Ctrl+N/O/S`, `Ctrl+Maj+S`, `Ctrl+W`, `Ctrl+Tab`/`Ctrl+PgUp/PgDn` (onglets), `Ctrl+F` ou `Ctrl+H` (Entrée/F3/`Ctrl+G` suivant ; Entrée dans le champ de remplacement remplace l'occurrence sélectionnée puis passe à la suivante), `Ctrl+Z`/`Ctrl+Y` ou `Ctrl+Maj+Z`, `Ctrl+I` (importer SIMP), `Ctrl+Q` (quitter), `Ctrl+,` (préférences), `Ctrl+/` (commenter), `Ctrl+D` (dupliquer), `Ctrl+Maj+K` (supprimer la ligne), `Alt+↑/↓` (déplacer), `Ctrl+E` (export SVG), `Ctrl+=`/`Ctrl+-`/`Ctrl+0`/`Ctrl+9` (zoom, ajuster), `Ctrl+J` (diagnostics), `Ctrl+T` (modèles), `Alt+PgUp/PgDn` (bloc @start précédent/suivant). Autocomplétion : le menu s'ouvre en tapant (ou `Ctrl+Espace`), `↑/↓` pour choisir, `Entrée`/`Tab` pour insérer, `Échap` pour fermer.
 
-Préférences (engrenage ⚙ de la barre d'outils ou `Ctrl+,`) : thème Système, Clair ou Sombre ; en thème sombre, diagramme sur feuille claire ou couleurs adaptées (luminosité inversée, teintes conservées ; l'export SVG reste inchangé) ; autocomplétion pendant la frappe ou seulement avec `Ctrl+Espace` ; taille du texte de l'éditeur (10 à 28). Chaque choix s'applique et s'enregistre aussitôt dans `$XDG_CONFIG_HOME/puml-editor/preferences.conf` (par défaut `~/.config/puml-editor/`), un fichier `clé = valeur` commenté ; une ligne invalide est signalée puis ignorée.
+Préférences (engrenage ⚙ de la barre d'outils ou `Ctrl+,`) : thème Système, Clair ou Sombre ; en thème sombre, diagramme sur feuille claire ou couleurs adaptées (luminosité inversée, teintes conservées ; l'export SVG reste inchangé) ; autocomplétion pendant la frappe ou seulement avec `Ctrl+Espace` ; taille du texte de l'éditeur (10 à 28) ; interface. Chaque choix s'applique et s'enregistre aussitôt dans `$XDG_CONFIG_HOME/simp2puml/preferences.conf` (par défaut `~/.config/simp2puml/`, le dossier de configuration habituel sous Windows et macOS), un fichier `clé = valeur` commenté ; une ligne invalide est signalée puis ignorée.
 
 Tests : `cd renderer && nimble test` (ou `nim c -r --path:src tests/test_render.nim`) et `cd editor && cargo test`. Ces derniers comprennent des parcours d'interface (`editor/src/view/interface_tests.rs`) : clics, raccourcis et dialogues réels sur la plateforme de test de GPUI, sans fenêtre ni session graphique.
 

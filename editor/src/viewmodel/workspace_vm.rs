@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription, WeakEntity};
 
-use crate::model::preferences::{MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, ThemeChoice};
 use crate::model::templates::{self, TEMPLATES};
-use crate::services::{file_service, preferences_service};
+use crate::services::{file_service, interface_service, preferences_service};
 use crate::services::render_service::{self, RenderService};
 use crate::viewmodel::document_vm::DocumentViewModel;
 use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel};
@@ -69,6 +69,8 @@ pub enum WorkspaceEvent {
     ConfirmClose { document: Entity<DocumentViewModel>, name: String },
     /// Confirmer la sortie avec des documents modifiés.
     ConfirmQuit { names: Vec<String> },
+    /// Changer d'interface avec des documents modifiés : confirmer.
+    ConfirmSwitch { names: Vec<String> },
     /// Le fichier a changé sur le disque : confirmer son remplacement.
     ConfirmOverwrite { document: Entity<DocumentViewModel>, path: PathBuf },
     Quit,
@@ -267,14 +269,17 @@ impl WorkspaceViewModel {
         self.close_document(&doc, false, cx);
     }
 
-    pub fn request_quit(&mut self, cx: &mut Context<Self>) {
-        let names: Vec<String> = self
-            .documents
+    fn unsaved_names(&self, cx: &App) -> Vec<String> {
+        self.documents
             .iter()
             .map(|d| d.read(cx))
             .filter(|d| d.editor.read(cx).buffer.is_dirty())
             .map(|d| d.display_name())
-            .collect();
+            .collect()
+    }
+
+    pub fn request_quit(&mut self, cx: &mut Context<Self>) {
+        let names = self.unsaved_names(cx);
         if names.is_empty() {
             cx.emit(WorkspaceEvent::Quit);
         } else {
@@ -627,6 +632,33 @@ impl WorkspaceViewModel {
     pub fn toggle_preferences(&mut self, cx: &mut Context<Self>) {
         self.preferences_open = !self.preferences_open;
         cx.notify();
+    }
+
+    /// Passe à l'interface classique, après confirmation si du travail serait perdu.
+    pub fn switch_to_classic(&mut self, cx: &mut Context<Self>) {
+        let names = self.unsaved_names(cx);
+        if names.is_empty() {
+            self.launch_classic(cx);
+        } else {
+            cx.emit(WorkspaceEvent::ConfirmSwitch { names });
+        }
+    }
+
+    /// Ouvre l'interface classique sur le fichier actif, enregistre le choix et quitte.
+    pub fn launch_classic(&mut self, cx: &mut Context<Self>) {
+        let file = self.active_document().read(cx).path.clone();
+        match interface_service::launch_classic(file.as_deref()) {
+            Ok(()) => {
+                self.update_preferences(|p| p.interface = InterfaceChoice::Classic, cx);
+                cx.emit(WorkspaceEvent::Quit);
+            }
+            Err(e) => self.set_status(format!("Changement d'interface impossible : {e}"), true, cx),
+        }
+    }
+
+    /// Lancement direct de `puml-editor` alors que l'interface classique était choisie.
+    pub fn stay_on_editor(&mut self, cx: &mut Context<Self>) {
+        self.update_preferences(|p| p.interface = InterfaceChoice::Editor, cx);
     }
 
     pub fn set_theme(&mut self, theme: ThemeChoice, cx: &mut Context<Self>) {

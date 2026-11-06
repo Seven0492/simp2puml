@@ -99,6 +99,8 @@ proc detectKind(lines: seq[SrcLine]): DiagramKind =
       if lw.startsWith(kw): hit(dkClass, 4)
     for kw in ["object ", "map "]:
       if lw.startsWith(kw): hit(dkObject, 4)
+    # entité de modèle de données : « entity » avec un corps n'est pas un participant de séquence
+    if lw.startsWith("entity ") and t.endsWith("{"): hit(dkClass, 6)
     for kw in ["usecase ", "usecase/ ", "actor/ ", "business "]:
       if lw.startsWith(kw): hit(dkUsecase, 4)
     if lw.startsWith("(") and not lw.startsWith("(*)") and not lw.startsWith("()"): hit(dkUsecase, 2)
@@ -190,11 +192,11 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
       meta.titleLine = l.num
       meta.title = unescapeLabel(t.afterWord("title"))
     elif lw in ["header", "left header", "right header", "center header"]:
-      meta.header = collect("endheader")
+      meta.header = collect("end header")
     elif lw.startsWithWord("header") or lw.startsWith("left header ") or lw.startsWith("right header ") or lw.startsWith("center header "):
       meta.header = unescapeLabel(t[t.toLowerAscii().find("header") + 6 .. ^1].strip())
     elif lw in ["footer", "left footer", "right footer", "center footer"]:
-      meta.footer = collect("endfooter")
+      meta.footer = collect("end footer")
     elif lw.startsWithWord("footer") or lw.startsWith("left footer ") or lw.startsWith("right footer ") or lw.startsWith("center footer "):
       meta.footer = unescapeLabel(t[t.toLowerAscii().find("footer") + 6 .. ^1].strip())
     elif lw.startsWithWord("caption"):
@@ -202,7 +204,7 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
     elif lw.startsWithWord("legend"):
       meta.legendLine = l.num
       meta.legendAlign = t.afterWord("legend").toLowerAscii()
-      meta.legend = collect("endlegend")
+      meta.legend = collect("end legend")
     elif lw.startsWithWord("skinparam"):
       if t.endsWith("{"):
         inc i

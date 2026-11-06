@@ -1,5 +1,7 @@
-//! Service : lecture et enregistrement des préférences, dans
-//! `$XDG_CONFIG_HOME/puml-editor/preferences.conf` (par défaut `~/.config`).
+//! Service : lecture et enregistrement des préférences, communes aux deux
+//! interfaces. Même emplacement que `src/simp2puml/preferences.py` :
+//! `$XDG_CONFIG_HOME/simp2puml/preferences.conf`, sinon le dossier de
+//! configuration habituel du système.
 
 use std::path::PathBuf;
 
@@ -7,11 +9,18 @@ use crate::model::preferences::Preferences;
 use crate::services::file_service;
 
 pub fn path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("puml-editor").join("preferences.conf"))
+    let var = |name| std::env::var_os(name).map(PathBuf::from);
+    let home = || var("HOME").or_else(|| var("USERPROFILE"));
+    let base = var("XDG_CONFIG_HOME").filter(|p| p.is_absolute()).or_else(|| {
+        if cfg!(windows) {
+            var("APPDATA").or_else(|| home().map(|h| h.join("AppData").join("Roaming")))
+        } else if cfg!(target_os = "macos") {
+            home().map(|h| h.join("Library").join("Application Support"))
+        } else {
+            home().map(|h| h.join(".config"))
+        }
+    })?;
+    Some(base.join("simp2puml").join("preferences.conf"))
 }
 
 /// Préférences enregistrées (valeurs par défaut si le fichier n'existe pas),

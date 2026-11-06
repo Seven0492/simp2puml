@@ -167,6 +167,19 @@ suite "robustesse (revue)":
     let r = renderPuml("@startuml\nskinparam class {\nBackgroundColor red\nclass A\n@enduml\n")
     check r.errors.len == 1
 
+suite "types et blocs (évaluation)":
+  test "légende et en-têtes en deux mots":
+    let r = renderPuml("@startuml\nheader\nH\nend header\nlegend right\nL\nend legend\nclass A\n@enduml\n")
+    check r.kind == dkClass
+    check r.warnings.len == 0
+    check "L" in r.svg
+
+  test "entité avec un corps : diagramme de classes":
+    let r = renderPuml("@startuml\nentity E {\n*id : int\n--\nn : text\n}\n@enduml\n")
+    check r.kind == dkClass
+    check r.warnings.len == 0
+    check "id : int" in r.svg
+
 suite "imbrication extrême : diagnostic, jamais d'arrêt du processus":
   proc rep(s: string, n: int): string =
     for _ in 1 .. n: result.add s

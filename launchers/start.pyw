@@ -25,7 +25,7 @@ def _report(details: str) -> None:
 
 if __name__ == "__main__":
     try:
-        from simp2puml.gui import main
+        from simp2puml.launcher import main
 
         code = main()
     except Exception:  # Démarrage impossible : garder une trace lisible.

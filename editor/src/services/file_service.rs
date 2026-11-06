@@ -141,8 +141,7 @@ impl Drop for TempDir {
 }
 
 /// Commande du convertisseur : $SIMP2PUML, `simp2puml` à côté de l'exécutable
-/// ou dans le PATH (entrées absolues seulement), sinon `python3 -P -m simp2puml`
-/// (avec src/ du dépôt si présent ; `-P` évite d'importer le dossier courant).
+/// ou dans le PATH (entrées absolues seulement), sinon le module Python.
 fn converter() -> Command {
     if let Some(p) = std::env::var_os("SIMP2PUML") {
         return Command::new(p);
@@ -154,15 +153,26 @@ fn converter() -> Command {
     if let Some(c) = beside.into_iter().chain(in_path).find(|c| c.is_file()) {
         return Command::new(c);
     }
-    let mut cmd = Command::new("python3");
-    cmd.arg("-P").arg("-m").arg("simp2puml");
+    python_module("simp2puml")
+}
+
+/// `python -P -m module` : le Python de l'interface classique s'il a été transmis
+/// ($SIMP2PUML_PYTHON), sinon `python3`, avec src/ du dépôt si présent (`-P` évite
+/// d'importer le dossier courant).
+pub fn python_module(module: &str) -> Command {
+    let python = std::env::var_os("SIMP2PUML_PYTHON").unwrap_or_else(|| "python3".into());
+    let mut cmd = Command::new(python);
+    cmd.arg("-P").arg("-m").arg(module);
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);
         for _ in 0..5 {
             let Some(d) = dir else { break };
             let src = d.join("src").join("simp2puml");
             if src.join("__init__.py").is_file() {
-                cmd.env("PYTHONPATH", d.join("src"));
+                // l'aiguilleur peut déjà avoir désigné le paquet en cours d'exécution
+                if std::env::var_os("PYTHONPATH").is_none() {
+                    cmd.env("PYTHONPATH", d.join("src"));
+                }
                 break;
             }
             dir = d.parent().map(Path::to_path_buf);

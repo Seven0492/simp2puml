@@ -9,7 +9,7 @@ use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use super::theme;
 use super::workspace_view::WorkspaceView;
 use crate::keymap;
-use crate::model::preferences::{Preferences, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, Preferences, ThemeChoice};
 use crate::services::preferences_service;
 use crate::viewmodel::workspace_vm::{PathPurpose, WorkspaceViewModel};
 
@@ -161,6 +161,70 @@ fn saved_preferences_are_applied_at_startup(cx: &mut TestAppContext) {
     assert!(!editor.read_with(window, |e, _| e.autocomplete));
     assert_eq!(editor.read_with(window, |e, _| e.code_size()), saved.code_size as f32);
     theme::set_appearance(false, false);
+}
+
+/// Faux `simp2puml-gui` : note ses arguments, ou échoue avec un message.
+fn fake_classic(name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = temp_file(name, &format!("#!/bin/sh\n{body}\n"));
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // SAFETY : les parcours sont exécutés un à la fois (verrou `INTERFACE`).
+    unsafe { std::env::set_var("SIMP2PUML_GUI", &script) };
+    script
+}
+
+#[gpui::test]
+fn typing_continues_after_a_toolbar_click(cx: &mut TestAppContext) {
+    let path = temp_file("focus.puml", "@startuml\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    s.click("tb-preferences");
+    s.window.simulate_input("x");
+    s.click("pref-size-plus");
+    s.window.simulate_input("y");
+    s.window.run_until_parked();
+    assert!(s.text().contains("xy"), "{}", s.text());
+}
+
+#[gpui::test]
+fn switching_to_the_classic_interface_saves_the_choice(cx: &mut TestAppContext) {
+    let path = temp_file("bascule.puml", "@startuml\nA -> B\n@enduml\n");
+    let mut s = open(cx, vec![path.clone()]);
+    let args = test_dir().join("arguments-bascule");
+    fake_classic("classique.sh", &format!("printf '%s\\n' \"$@\" > '{}'", args.display()));
+    assert_eq!(s.preferences().interface, InterfaceChoice::Editor, "la nouvelle interface par défaut");
+
+    // un document modifié demande confirmation : « Annuler » ne change rien
+    s.click("tb-preferences");
+    s.window.simulate_input("x");
+    s.click("pref-interface-classic");
+    assert!(s.window.has_pending_prompt());
+    s.window.simulate_prompt_answer("Annuler");
+    s.window.run_until_parked();
+    assert!(!args.exists());
+    assert_eq!(s.preferences().interface, InterfaceChoice::Editor);
+
+    s.click("pref-interface-classic");
+    s.window.simulate_prompt_answer("Changer sans enregistrer");
+    s.window.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(&args).unwrap(),
+        format!("--interface\nclassic\n{}\n", path.display()),
+        "l'interface classique reçoit le fichier actif"
+    );
+    assert_eq!(preferences_service::load().0.interface, InterfaceChoice::Classic);
+    unsafe { std::env::remove_var("SIMP2PUML_GUI") };
+}
+
+#[gpui::test]
+fn a_classic_interface_that_cannot_start_keeps_the_choice(cx: &mut TestAppContext) {
+    let mut s = open(cx, vec![]);
+    fake_classic("casse.sh", "echo 'Erreur : Tkinter absent' >&2; exit 1");
+    s.click("tb-preferences");
+    s.click("pref-interface-classic");
+    assert!(s.status().contains("Tkinter absent"), "{}", s.status());
+    assert_eq!(s.preferences().interface, InterfaceChoice::Editor);
+    assert!(!preferences_service::path().unwrap().exists(), "aucun choix enregistré");
+    unsafe { std::env::remove_var("SIMP2PUML_GUI") };
 }
 
 #[gpui::test]

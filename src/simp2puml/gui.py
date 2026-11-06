@@ -16,7 +16,7 @@ import re
 import sys
 import threading
 
-from . import __version__, cli, render
+from . import __version__, cli, interfaces, preferences, render
 from .model import ConversionError
 from .simp import list_diagrams
 
@@ -83,7 +83,8 @@ class Result:
 
 
 def default_target(source: Path) -> str:
-    return "puml" if source.suffix.lower() == ".simp" else "simp"
+    """Une source est d'abord montrée en PlantUML : SIMP converti, ou texte .puml tel quel."""
+    return "puml"
 
 
 def run(request: Request) -> Result:
@@ -93,8 +94,15 @@ def run(request: Request) -> Result:
     if suffix not in cli.SOURCE_SUFFIXES:
         result.error = "l'extension source doit être .simp ou .puml"
         return result
-    if request.target not in cli.TARGETS or cli.TARGETS[request.target] == suffix:
+    if request.target not in cli.TARGETS or (cli.TARGETS[request.target] == suffix and suffix != ".puml"):
         result.error = "le format cible doit différer du format source"
+        return result
+    if suffix == ".puml" and request.target == "puml":
+        # Pas de conversion : le texte reste entier, y compris ce que le convertisseur strict refuserait.
+        try:
+            result.content = cli._read_source(request.source)
+        except (OSError, UnicodeError, ConversionError) as exc:
+            result.error = str(exc)
         return result
     if request.all and (suffix != ".simp" or request.target != "puml"):
         result.error = "« tous les diagrammes » exige une source SIMP et une sortie PlantUML"
@@ -454,6 +462,9 @@ class App:
         s.configure("File.Card.TLabel", font=self.f_ui_bold)
         s.configure("Muted.Card.TLabel", foreground=C["muted"], font=self.f_small)
         s.configure("Field.Card.TLabel", foreground=C["muted"], font=self.f_label)
+        s.configure("Card.TRadiobutton", background=C["surface"], foreground=C["ink"], font=self.f_ui)
+        s.map("Card.TRadiobutton", background=[("active", C["surface"])],
+              foreground=[("disabled", C["faint"])])
 
         pad = (self.sp("l"), self.sp("m"))
         primary_pad = (self.sp("xl"), self.sp("m"))
@@ -633,6 +644,12 @@ class App:
                  fg=C["header_sub"], bg=C["header"]).pack(anchor="w")
         tk.Label(header, text=f"v{__version__}", font=self.f_label, fg=C["header_sub"], bg=C["header_chip"],
                  padx=self.sp("m"), pady=self.sp("xs")).pack(side="right", anchor="n")
+        self.preferences_button = tk.Button(header, text="⚙  Préférences", font=self.f_label, fg=C["header_fg"],
+                                            bg=C["header_chip"], activebackground=C["header_chip"],
+                                            activeforeground=C["header_fg"], relief="flat", borderwidth=0,
+                                            highlightthickness=0, padx=self.sp("m"), pady=self.sp("xs"),
+                                            cursor="hand2", command=self.open_preferences)
+        self.preferences_button.pack(side="right", anchor="n", padx=(0, self.sp("m")))
 
     def _build_controls(self, body) -> None:
         card = self._card(body)
@@ -1523,8 +1540,68 @@ class App:
         self.root.bind("<Control-s>", lambda _e: self.save_as())
         self.root.bind("<F5>", lambda _e: self.reload())
         self.root.bind("<Control-Shift-C>", lambda _e: self.copy())
+        self.root.bind("<Control-comma>", lambda _e: self.open_preferences())
         for index, name in enumerate(self.TABS, start=1):
             self.root.bind(f"<Control-Key-{index}>", lambda _e, n=name: self._select_tab(n))
+
+    # Préférences ---------------------------------------------------------------------------
+    def open_preferences(self) -> None:
+        """Choix de l'interface : il s'applique aussitôt, comme dans la nouvelle interface."""
+        existing = getattr(self, "preferences_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            return
+        window = tk.Toplevel(self.root, bg=C["surface"], padx=self.sp("xl"), pady=self.sp("l"))
+        window.title("Préférences — simp2puml")
+        window.transient(self.root)
+        window.resizable(False, False)
+        window.bind("<Escape>", lambda _e: window.destroy())
+        self.preferences_window = window
+        ttk.Label(window, text="INTERFACE", style="Field.Card.TLabel").pack(anchor="w", pady=(0, self.sp("s")))
+        self.interface_var = tk.StringVar(value=preferences.CLASSIC)  # Celle de cette fenêtre.
+        editor = interfaces.find_editor()
+        new = ttk.Radiobutton(window, text="Nouvelle interface (éditeur avec aperçu en direct)",
+                              value=preferences.EDITOR, variable=self.interface_var, style="Card.TRadiobutton",
+                              command=lambda: self.switch_interface(preferences.EDITOR))
+        new.pack(anchor="w")
+        if editor is None:
+            new.state(["disabled"])
+        ttk.Radiobutton(window, text="Interface classique (convertisseur)", value=preferences.CLASSIC,
+                        variable=self.interface_var, style="Card.TRadiobutton",
+                        command=lambda: self.switch_interface(preferences.CLASSIC)).pack(anchor="w")
+        note = ("La nouvelle interface n'est pas installée sur cet ordinateur : voir le README." if editor is None
+                else "La conversion et le fichier de préférences sont communs aux deux interfaces.")
+        ttk.Label(window, text=note, style="Muted.Card.TLabel").pack(anchor="w", pady=(self.sp("m"), 0))
+
+    def switch_interface(self, choice: str) -> bool:
+        """Change d'interface ; vrai si la nouvelle a pris le relais (cette fenêtre se ferme alors)."""
+        if choice != preferences.EDITOR:
+            self._save_interface(choice)
+            return False
+        editor = interfaces.find_editor()
+        if editor is None:
+            self._set_status("La nouvelle interface n'est pas installée sur cet ordinateur.", "error")
+            return False
+        if self._dirty and not messagebox.askyesno(
+                "simp2puml", "Le résultat a été modifié à la main.\n\nChanger d'interface perdra ces modifications. "
+                             "Continuer ?", icon="warning", default="no", parent=self.root):
+            self.interface_var.set(preferences.CLASSIC)
+            return False
+        source = self.source_var.get()
+        error = interfaces.start_editor(editor, [source] if source else [])
+        if error is not None:
+            self.interface_var.set(preferences.CLASSIC)
+            self._set_status(f"Changement d'interface impossible : {_shorten(error, 120)}", "error")
+            return False
+        self._save_interface(choice)
+        self.close()
+        return True
+
+    def _save_interface(self, choice: str) -> None:
+        try:
+            preferences.set_interface(choice)
+        except OSError as exc:
+            self._set_status(f"Préférence non enregistrée : {_shorten(str(exc), 120)}", "error")
 
     def _select_tab(self, name: str) -> None:
         self.tab_var.set(name)
@@ -1649,7 +1726,9 @@ class App:
         if all_selected and self.target_var.get() != "puml":
             self.target_var.set("puml")
         for key, button in self.target_buttons.items():
-            disabled = not source or cli.TARGETS[key] == suffix or (all_selected and key != "puml")
+            # Une source .puml peut rester en PlantUML (texte tel quel) ; pas une source SIMP en SIMP.
+            same = cli.TARGETS[key] == suffix and suffix != ".puml"
+            disabled = not source or same or (all_selected and key != "puml")
             button.state(["disabled"] if disabled else ["!disabled"])
         self.diagram_box.configure(state="readonly" if self.diagrams else "disabled")
         if not self.diagrams:
@@ -1899,13 +1978,14 @@ def _prepare_windows() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    if args and args[0] in ("-h", "--help"):
-        print("Usage : simp2puml-gui [fichier.simp|fichier.puml]")
-        return 0
-    if args and args[0] == "--version":
-        print(f"simp2puml-gui {__version__}")
-        return 0
+    """Ouvre l'interface classique ; `launcher.main` choisit l'interface au lancement."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in ("-h", "--help", "--version"):
+        from .launcher import main as launcher_main
+
+        return launcher_main(args)
+    if args[:2] == ["--interface", preferences.CLASSIC]:
+        args = args[2:]
     if tk is None:
         print("Erreur : Tkinter n'est pas disponible dans cette installation Python.", file=sys.stderr)
         return 1
