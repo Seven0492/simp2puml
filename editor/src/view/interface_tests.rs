@@ -9,7 +9,7 @@ use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use super::theme;
 use super::workspace_view::WorkspaceView;
 use crate::keymap;
-use crate::model::preferences::{InterfaceChoice, Preferences, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::services::preferences_service;
 use crate::viewmodel::workspace_vm::{PathPurpose, WorkspaceViewModel};
 
@@ -171,6 +171,106 @@ fn fake_classic(name: &str, body: &str) -> PathBuf {
     // SAFETY : les parcours sont exécutés un à la fois (verrou `INTERFACE`).
     unsafe { std::env::set_var("SIMP2PUML_GUI", &script) };
     script
+}
+
+fn diagnostics(s: &Session) -> Vec<String> {
+    s.window.read(|cx| {
+        let doc = s.vm.read(cx).active_document().read(cx);
+        doc.output().map(|o| o.diagnostics.iter().map(|d| format!("{} {}", d.line, d.message)).collect()).unwrap_or_default()
+    })
+}
+
+fn rendered_svg(s: &Session) -> String {
+    s.window.read(|cx| s.vm.read(cx).active_document().read(cx).output().map(|o| o.svg.clone()).unwrap_or_default())
+}
+
+/// Les trois profils de sécurité, sur le vrai moteur natif et de vrais fichiers.
+#[gpui::test]
+fn security_profiles_govern_macros_and_includes(cx: &mut TestAppContext) {
+    if crate::services::render_service::RenderService::locate().is_none() {
+        eprintln!("pumlrender absent : test ignoré");
+        return;
+    }
+    let dir = test_dir().join("profils");
+    std::fs::create_dir_all(dir.join("doc")).unwrap();
+    std::fs::write(dir.join("secret.puml"), "class SECRET").unwrap();
+    std::fs::write(dir.join("doc/commun.iuml"), "class Commun").unwrap();
+    let path = dir.join("doc/d.puml");
+    std::fs::write(
+        &path,
+        "@startuml\n!define BOITE(n) class n\nBOITE(Macro)\n!include commun.iuml\n!include ../secret.puml\n@enduml\n",
+    )
+    .unwrap();
+    let mut s = open(cx, vec![path]);
+    assert_eq!(s.preferences().security_profile, SecurityProfile::Macros);
+
+    // Macros (défaut) : !define marche, !include est refusé et le message dit quoi faire
+    let (svg, notes) = (rendered_svg(&s), diagnostics(&s));
+    assert!(svg.contains("Macro") && !svg.contains("Commun"), "{svg}");
+    assert!(notes.iter().any(|n| n.starts_with("4 ") && n.contains("Dossier du document")), "{notes:?}");
+
+    // Dossier du document : l'inclusion voisine passe, pas celle qui sort du dossier
+    s.click("tb-preferences");
+    s.click("pref-security-folder");
+    s.window.run_until_parked();
+    let (svg, notes) = (rendered_svg(&s), diagnostics(&s));
+    assert!(svg.contains("Commun") && svg.contains("Macro") && !svg.contains("SECRET"), "{svg}");
+    assert!(notes.iter().any(|n| n.starts_with("5 ") && n.contains("hors du dossier")), "{notes:?}");
+    assert_eq!(preferences_service::load().0.security_profile, SecurityProfile::Folder, "enregistré");
+
+    // Aucun : ni macros ni fichiers, le texte reste signalé
+    s.click("pref-security-none");
+    s.window.run_until_parked();
+    let (svg, notes) = (rendered_svg(&s), diagnostics(&s));
+    assert!(!svg.contains("Commun"), "{svg}");
+    assert!(notes.iter().any(|n| n.starts_with("2 ") && n.contains("Aucun")), "{notes:?}");
+}
+
+/// Faux moteur officiel : `corps` reçoit la requête dans $id.
+fn fake_preview(name: &str, reply: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = temp_file(
+        name,
+        &format!("#!/bin/sh\nwhile read -r c id b n; do\n  head -c \"$n\" >/dev/null\n  {reply}\ndone\n"),
+    );
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // SAFETY : les parcours sont exécutés un à la fois (verrou `INTERFACE`).
+    unsafe { std::env::set_var("SIMP2PUML_PREVIEW", &script) };
+}
+
+#[gpui::test]
+fn preview_engine_can_be_switched_and_is_remembered(cx: &mut TestAppContext) {
+    let path = temp_file("moteur.puml", "@startuml\nA -> B\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"/>";
+    fake_preview(
+        "officiel.sh",
+        &format!("printf 'PUMLRENDER 1\\nID\\t%s\\nKIND\\tfaux officiel\\nBLOCKS\\t1\\nSIZE\\t10\\t10\\nSVG\\t{}\\n{}' \"$id\"", svg.len(), svg.replace('"', "\\\"")),
+    );
+    assert_eq!(s.preferences().preview_engine, PreviewEngine::Native, "le natif par défaut");
+    s.click("tb-preferences");
+    s.click("pref-engine-official");
+    s.window.run_until_parked();
+    let kind = s.window.read(|cx| s.vm.read(cx).active_document().read(cx).output().map(|o| o.kind.clone()));
+    assert_eq!(kind.as_deref(), Some("faux officiel"));
+    assert_eq!(preferences_service::load().0.preview_engine, PreviewEngine::Official);
+    s.click("pref-engine-native");
+    s.window.run_until_parked();
+    assert_eq!(preferences_service::load().0.preview_engine, PreviewEngine::Native);
+    unsafe { std::env::remove_var("SIMP2PUML_PREVIEW") };
+}
+
+#[gpui::test]
+fn missing_official_engine_offers_installation(cx: &mut TestAppContext) {
+    let path = temp_file("installe.puml", "@startuml\nA -> B\n@enduml\n");
+    let mut s = open(cx, vec![path]);
+    fake_preview("absent.sh", "printf 'PUMLRENDER 1\\nID\\t%s\\nERROR\\tmoteur PlantUML non installé\\n' \"$id\"");
+    s.click("tb-preferences");
+    s.click("pref-engine-official");
+    s.window.run_until_parked();
+    assert!(s.vm.read_with(s.window, |vm, cx| vm.official_engine_missing(cx)));
+    assert!(s.window.debug_bounds("pref-install-official").is_some(), "le bouton est proposé");
+    unsafe { std::env::remove_var("SIMP2PUML_PREVIEW") };
 }
 
 #[gpui::test]

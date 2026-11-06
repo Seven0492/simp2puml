@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription, WeakEntity};
 
-use crate::model::preferences::{InterfaceChoice, MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::model::templates::{self, TEMPLATES};
 use crate::services::{file_service, interface_service, preferences_service};
 use crate::services::render_service::{self, RenderService};
@@ -106,6 +106,8 @@ pub struct WorkspaceViewModel {
     /// changer pendant que le sélecteur ou la saisie de chemin est ouvert.
     path_target: Option<WeakEntity<DocumentViewModel>>,
     service: Option<Arc<RenderService>>,
+    /// Installation du moteur officiel en cours.
+    pub installing: bool,
     untitled_count: usize,
     _subscriptions: Vec<Subscription>,
 }
@@ -131,8 +133,8 @@ impl WorkspaceViewModel {
                 _ => {}
             }),
         ];
-        let service = RenderService::locate().map(Arc::new);
         let (preferences, preferences_message) = preferences_service::load();
+        let service = make_service(preferences.preview_engine);
         let mut ws = Self {
             documents: Vec::new(),
             active: 0,
@@ -146,6 +148,7 @@ impl WorkspaceViewModel {
             status: None,
             path_target: None,
             service,
+            installing: false,
             untitled_count: 0,
             _subscriptions: subs,
         };
@@ -195,7 +198,12 @@ impl WorkspaceViewModel {
 
     fn add_document(&mut self, path: Option<PathBuf>, title: String, text: &str, cx: &mut Context<Self>) {
         let service = self.service.clone();
-        let doc = cx.new(|cx| DocumentViewModel::new(text, path, title, service, cx));
+        let profile = self.preferences.security_profile;
+        let doc = cx.new(|cx| {
+            let mut doc = DocumentViewModel::new(text, path, title, service, cx);
+            doc.security_profile = profile;
+            doc
+        });
         let (autocomplete, code_size) = (self.preferences.autocomplete, self.preferences.code_size);
         doc.read(cx).editor.clone().update(cx, |e, cx| {
             e.autocomplete = autocomplete;
@@ -681,6 +689,62 @@ impl WorkspaceViewModel {
         }
     }
 
+    fn reconfigure_documents(&mut self, cx: &mut Context<Self>) {
+        let (service, profile) = (self.service.clone(), self.preferences.security_profile);
+        for doc in self.documents.clone() {
+            doc.update(cx, |d, cx| d.reconfigure(service.clone(), profile, cx));
+        }
+    }
+
+    pub fn set_preview_engine(&mut self, engine: PreviewEngine, cx: &mut Context<Self>) {
+        if engine == self.preferences.preview_engine {
+            return;
+        }
+        self.update_preferences(|p| p.preview_engine = engine, cx);
+        self.service = make_service(engine);
+        self.reconfigure_documents(cx);
+    }
+
+    pub fn set_security_profile(&mut self, profile: SecurityProfile, cx: &mut Context<Self>) {
+        if profile == self.preferences.security_profile {
+            return;
+        }
+        self.update_preferences(|p| p.security_profile = profile, cx);
+        self.reconfigure_documents(cx);
+    }
+
+    /// Le moteur choisi manque : la vue propose de l'installer.
+    pub fn official_engine_missing(&self, cx: &App) -> bool {
+        self.preferences.preview_engine == PreviewEngine::Official
+            && self.active_document().read(cx).render_error.as_deref().is_some_and(|e| e.contains("non installé"))
+    }
+
+    /// Télécharge et vérifie le moteur officiel, en arrière-plan, puis relance les rendus.
+    pub fn install_official_engine(&mut self, cx: &mut Context<Self>) {
+        if self.installing {
+            return;
+        }
+        self.installing = true;
+        self.set_status("Installation de PlantUML en cours…", false, cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { render_service::install_official() }).await;
+            this.update(cx, |this, cx| {
+                this.installing = false;
+                match result {
+                    Ok(()) => {
+                        this.set_status("PlantUML installé", false, cx);
+                        for doc in this.documents.clone() {
+                            doc.update(cx, |d, cx| d.rerender(cx));
+                        }
+                    }
+                    Err(e) => this.set_status(format!("Installation de PlantUML impossible : {e}"), true, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Taille du texte de l'éditeur, pour tous les onglets.
     pub fn change_code_size(&mut self, delta: i32, cx: &mut Context<Self>) {
         let size = self.preferences.code_size.saturating_add_signed(delta).clamp(MIN_CODE_SIZE, MAX_CODE_SIZE);
@@ -712,6 +776,13 @@ impl WorkspaceViewModel {
     pub fn set_split(&mut self, split: f32, cx: &mut Context<Self>) {
         self.split = split.clamp(0.15, 0.85);
         cx.notify();
+    }
+}
+
+fn make_service(engine: PreviewEngine) -> Option<Arc<RenderService>> {
+    match engine {
+        PreviewEngine::Native => RenderService::locate().map(Arc::new),
+        PreviewEngine::Official => Some(Arc::new(RenderService::official())),
     }
 }
 

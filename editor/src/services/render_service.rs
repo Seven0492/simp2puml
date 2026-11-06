@@ -19,8 +19,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use crate::model::diagram::{RenderOutput, parse_protocol};
+use crate::services::file_service;
 
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
+/// PlantUML démarre Java au premier rendu et travaille plus lentement.
+const OFFICIAL_TIMEOUT: Duration = Duration::from_secs(60);
 const PROBE: &str = "@startuml\n@enduml\n";
 
 /// Échec d'une requête : `retry` si le processus est mort (le relancer peut
@@ -90,8 +93,25 @@ fn die_with_parent(cmd: &mut Command) {
     let _ = cmd;
 }
 
+/// Installe le moteur officiel (téléchargement vérifié par `render.py`), en bloquant.
+pub fn install_official() -> Result<(), String> {
+    let out = official_command().arg("--install").output().map_err(|e| format!("installation impossible : {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(stderr.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("échec de l'installation").trim().to_string())
+}
+
+fn official_command() -> Command {
+    file_service::package_tool("SIMP2PUML_PREVIEW", "simp2puml-preview", "simp2puml.preview_server")
+}
+
 pub struct RenderService {
     pub exe: PathBuf,
+    /// Commande du mode persistant.
+    command: Box<dyn Fn() -> Command + Send + Sync>,
+    timeout: Duration,
     server: Mutex<Option<Server>>,
     next_id: AtomicU64,
     serve_unsupported: AtomicBool,
@@ -107,12 +127,33 @@ impl RenderService {
     }
 
     pub fn new(exe: PathBuf) -> Self {
+        let program = exe.clone();
         Self {
             exe,
+            command: Box::new(move || {
+                let mut cmd = Command::new(&program);
+                cmd.arg("--serve");
+                cmd
+            }),
+            timeout: RENDER_TIMEOUT,
             server: Mutex::new(None),
             next_id: AtomicU64::new(1),
             serve_unsupported: AtomicBool::new(false),
             served: AtomicBool::new(false),
+        }
+    }
+
+    /// Moteur officiel PlantUML, derrière le même protocole (`simp2puml.preview_server`).
+    pub fn official() -> Self {
+        Self {
+            exe: PathBuf::from("simp2puml-preview"),
+            command: Box::new(official_command),
+            timeout: OFFICIAL_TIMEOUT,
+            server: Mutex::new(None),
+            next_id: AtomicU64::new(1),
+            serve_unsupported: AtomicBool::new(false),
+            // pas de sonde ni de repli `--editor` : ce protocole est le seul de ce moteur
+            served: AtomicBool::new(true),
         }
     }
 
@@ -154,8 +195,8 @@ impl RenderService {
     /// Lance `pumlrender --serve` ; à la première fois, vérifie par une requête
     /// triviale que le binaire gère ce mode.
     fn spawn(&self) -> Result<Server, String> {
-        let mut cmd = Command::new(&self.exe);
-        cmd.arg("--serve").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut cmd = (self.command)();
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         die_with_parent(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("impossible de lancer {} : {e}", self.exe.display()))?;
         let stdin = child.stdin.take().ok_or("stdin indisponible")?;
@@ -185,17 +226,19 @@ impl RenderService {
         writeln!(server.stdin, "RENDER {id} {block} {}", text.len()).map_err(io)?;
         server.stdin.write_all(text.as_bytes()).map_err(io)?;
         server.stdin.flush().map_err(io)?;
-        let raw = match server.responses.recv_timeout(RENDER_TIMEOUT) {
+        let raw = match server.responses.recv_timeout(self.timeout) {
             Ok(r) => r.map_err(died)?,
             Err(RecvTimeoutError::Timeout) => {
                 return Err(Failure {
-                    message: format!("rendu abandonné après {} s (le moteur ne répond plus)", RENDER_TIMEOUT.as_secs()),
+                    message: format!("rendu abandonné après {} s (le moteur ne répond plus)", self.timeout.as_secs()),
                     retry: false,
                 });
             }
             Err(RecvTimeoutError::Disconnected) => return Err(died("le moteur de rendu s'est arrêté".into())),
         };
-        let out = parse_protocol(&raw).map_err(died)?;
+        // une erreur annoncée par le moteur ne se résout pas en le relançant
+        let announced = raw.windows(7).any(|w| w == b"\nERROR\t") || raw.starts_with(b"ERROR");
+        let out = parse_protocol(&raw).map_err(|message| Failure { message, retry: !announced })?;
         if out.id != id {
             return Err(died(format!("réponse désynchronisée ({} au lieu de {id})", out.id)));
         }
@@ -324,6 +367,26 @@ mod tests {
         // le mode persistant reste en place (le moteur gère --serve)
         assert!(!service.serve_unsupported.load(Ordering::Relaxed));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Chaîne réelle du moteur officiel, si PlantUML est fourni : PLANTUML_JAR=… cargo test officiel
+    #[test]
+    fn official_engine_becomes_a_vector_scene() {
+        if std::env::var_os("PLANTUML_JAR").is_none() {
+            eprintln!("PLANTUML_JAR absent : test ignoré");
+            return;
+        }
+        let service = RenderService::official();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../renderer/tests/samples");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let out = service.render(&text, 0).unwrap_or_else(|e| panic!("{} : {e}", path.display()));
+            assert_eq!(out.kind, "plantuml officiel");
+            let scene = crate::model::svg_scene::Scene::parse(&out.svg).unwrap_or_else(|e| panic!("{} : {e}", path.display()));
+            assert!(scene.items.len() > 3, "{} : {} éléments", path.display(), scene.items.len());
+            assert!(scene.width > 0.0 && scene.height > 0.0, "{}", path.display());
+        }
     }
 
     #[test]

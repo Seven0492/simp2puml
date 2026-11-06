@@ -6,9 +6,10 @@
 //! vue les dessine directement avec GPUI. Le zoom n'est alors qu'une
 //! transformation : rien n'est recalculé, et le tracé reste net à toute échelle.
 //!
-//! Seul le sous-ensemble SVG émis par `pumlrender` est pris en charge :
-//! `rect`, `line`, `circle`, `ellipse`, `polygon`, `path` (M L H V Q C A Z,
-//! absolus ou relatifs), `text`, et `g` avec `translate(...)`.
+//! Seul le sous-ensemble SVG émis par `pumlrender` et par PlantUML est pris en
+//! charge : `rect`, `line`, `circle`, `ellipse`, `polygon`, `path` (M L H V Q C A Z,
+//! absolus ou relatifs), `text`, et `g` avec `translate(...)`. Les couleurs viennent
+//! des attributs ou de `style="…"` ; un dégradé est réduit à sa première couleur.
 
 use roxmltree::{Document, Node, ParsingOptions};
 
@@ -116,6 +117,13 @@ impl Scene {
         let (vw, vh) = view_box(&root);
         scene.width = vw.or_else(|| num(&root, "width")).unwrap_or(0.0);
         scene.height = vh.or_else(|| num(&root, "height")).unwrap_or(0.0);
+        // fond demandé par le thème : `style="background:#…"` sur la racine
+        if let Some(color) = style_value(&root, "background").and_then(|v| paint(&root, v)) {
+            let geometry = Geometry::Rect { x: 0.0, y: 0.0, w: scene.width, h: scene.height, radius: 0.0 };
+            let bounds = geometry_bounds(&geometry, 0.0);
+            let style = Style { fill: Some(color), stroke: None, stroke_width: 0.0, dash: Vec::new() };
+            scene.items.push(Item::Shape { geometry, style, bounds });
+        }
         walk(&root, 0.0, 0.0, &mut scene.items);
         Ok(scene)
     }
@@ -153,22 +161,47 @@ fn translate(node: &Node) -> (f32, f32) {
     (v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0))
 }
 
+/// Valeur d'une propriété dans l'attribut `style="a:b;c:d"`.
+fn style_value<'a>(node: &Node<'a, '_>, name: &str) -> Option<&'a str> {
+    node.attribute("style")?.split(';').find_map(|decl| {
+        let (k, v) = decl.split_once(':')?;
+        (k.trim() == name).then(|| v.trim())
+    })
+}
+
+/// Attribut de présentation, ou la même propriété dans `style`, qui a priorité en SVG.
+fn property<'a>(node: &Node<'a, '_>, name: &str) -> Option<&'a str> {
+    style_value(node, name).or_else(|| node.attribute(name))
+}
+
+/// Couleur, ou première couleur du dégradé désigné par `url(#id)`.
+fn paint(node: &Node, value: &str) -> Option<Color> {
+    let Some(id) = value.strip_prefix("url(#").and_then(|v| v.strip_suffix(')')) else {
+        return parse_color(value);
+    };
+    let gradient = node.document().descendants().find(|n| n.attribute("id") == Some(id))?;
+    let stop = gradient.children().find(|n| n.has_tag_name("stop") || n.tag_name().name() == "stop")?;
+    parse_color(stop.attribute("stop-color")?)
+}
+
+fn prop_num(node: &Node, name: &str) -> Option<f32> {
+    property(node, name)?.trim().trim_end_matches("px").parse().ok()
+}
+
 fn style(node: &Node) -> Style {
-    let opacity = num(node, "opacity").unwrap_or(1.0);
-    let fill = match node.attribute("fill") {
+    let opacity = prop_num(node, "opacity").unwrap_or(1.0);
+    let fill = match property(node, "fill") {
         None => Some(Color(0x000000ff)),
-        Some(v) => parse_color(v),
+        Some(v) => paint(node, v),
     }
-    .map(|c| c.with_alpha(num(node, "fill-opacity").unwrap_or(1.0) * opacity));
-    let stroke = node
-        .attribute("stroke")
-        .and_then(parse_color)
-        .map(|c| c.with_alpha(num(node, "stroke-opacity").unwrap_or(1.0) * opacity));
-    let dash = node
-        .attribute("stroke-dasharray")
+    .map(|c| c.with_alpha(prop_num(node, "fill-opacity").unwrap_or(1.0) * opacity));
+    let stroke = property(node, "stroke")
+        .and_then(|v| paint(node, v))
+        .map(|c| c.with_alpha(prop_num(node, "stroke-opacity").unwrap_or(1.0) * opacity));
+    let dash = property(node, "stroke-dasharray")
         .map(|d| d.split([' ', ',']).filter_map(|s| s.parse().ok()).collect())
         .unwrap_or_default();
-    Style { fill, stroke, stroke_width: num(node, "stroke-width").unwrap_or(1.0), dash }
+    Style { fill, stroke, stroke_width: prop_num(node, "stroke-width").unwrap_or(1.0), dash }
 }
 
 fn walk(node: &Node, ox: f32, oy: f32, out: &mut Vec<Item>) {
@@ -512,6 +545,28 @@ const NAMED_COLORS: &[(&str, u32)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Extrait de ce que produit PlantUML : couleurs dans `style`, dégradé, fond de page.
+    #[test]
+    fn plantuml_output_is_understood() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" style="width:50px;background:#102030;" viewBox="0 0 50 40"><defs><linearGradient id="g1"><stop stop-color="#59B6EC" offset="0%"/><stop stop-color="#2FA4E7" offset="100%"/></linearGradient></defs><g font-family="sans-serif" data-source-line="2"><rect x="1" y="2" width="3" height="4" fill="url(#g1)" style="stroke:#181818;stroke-width:0.5;"/><path d="M1,2 L3,4 Q5,6 7,8" fill="none" style="stroke:url(#g1);stroke-width:1;"/><line x1="0" y1="0" x2="5" y2="5" style="stroke:#FF0000;stroke-width:2;stroke-dasharray:2,3;"/><text x="5" y="6" fill="#F8F9FA" font-size="11" textLength="20" font-family="'Verdana'">ab</text></g></svg>"##;
+        let scene = Scene::parse(svg).unwrap();
+        assert_eq!((scene.width, scene.height), (50.0, 40.0));
+        assert_eq!(scene.items.len(), 5, "fond + 4 éléments");
+        let Item::Shape { style: background, .. } = &scene.items[0] else { panic!() };
+        assert_eq!(background.fill, Some(Color(0x102030ff)));
+        let Item::Shape { style: rect, .. } = &scene.items[1] else { panic!() };
+        assert_eq!(rect.fill, Some(Color(0x59b6ecff)), "première couleur du dégradé");
+        assert_eq!(rect.stroke, Some(Color(0x181818ff)));
+        assert_eq!(rect.stroke_width, 0.5);
+        let Item::Shape { style: path, geometry: Geometry::Path(cmds), .. } = &scene.items[2] else { panic!() };
+        assert_eq!(path.fill, None);
+        assert_eq!(path.stroke, Some(Color(0x59b6ecff)));
+        assert_eq!(cmds.len(), 3);
+        let Item::Shape { style: line, .. } = &scene.items[3] else { panic!() };
+        assert_eq!(line.dash, vec![2.0, 3.0]);
+    }
+
 
     #[test]
     fn named_colors_are_sorted() {

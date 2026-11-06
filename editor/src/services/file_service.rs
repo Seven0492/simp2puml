@@ -140,20 +140,25 @@ impl Drop for TempDir {
     }
 }
 
-/// Commande du convertisseur : $SIMP2PUML, `simp2puml` à côté de l'exécutable
-/// ou dans le PATH (entrées absolues seulement), sinon le module Python.
+/// Commande du convertisseur `simp2puml`.
 fn converter() -> Command {
-    if let Some(p) = std::env::var_os("SIMP2PUML") {
+    package_tool("SIMP2PUML", "simp2puml", "simp2puml")
+}
+
+/// Commande du paquet Python : variable d'environnement, à côté de l'exécutable,
+/// dans le PATH (entrées absolues seulement), sinon le module Python.
+pub fn package_tool(env: &str, script: &str, module: &str) -> Command {
+    if let Some(p) = std::env::var_os(env) {
         return Command::new(p);
     }
-    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("simp2puml")));
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(script)));
     let in_path = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).map(|d| d.join("simp2puml")).collect::<Vec<_>>())
+        .map(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).map(|d| d.join(script)).collect::<Vec<_>>())
         .unwrap_or_default();
-    if let Some(c) = beside.into_iter().chain(in_path).find(|c| c.is_file()) {
-        return Command::new(c);
+    match beside.into_iter().chain(in_path).find(|c| c.is_file()) {
+        Some(found) => Command::new(found),
+        None => python_module(module),
     }
-    python_module("simp2puml")
 }
 
 /// `python -P -m module` : le Python de l'interface classique s'il a été transmis

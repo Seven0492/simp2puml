@@ -18,6 +18,7 @@ dev = ["pytest>=8,<10", "build>=1,<2", "setuptools>=77"]
 
 [project.scripts]
 simp2puml = "simp2puml.cli:main"
+simp2puml-preview = "simp2puml.preview_server:main"
 
 [project.gui-scripts]
 simp2puml-gui = "simp2puml.launcher:main"

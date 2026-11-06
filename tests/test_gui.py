@@ -1,4 +1,5 @@
 """Logique de l'interface graphique ; la fenêtre Tk n'est testée que si un affichage existe."""
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -6,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from simp2puml import gui, launcher, preferences
+from simp2puml import gui, launcher, preferences, preview_server, render
 
 PUML = """@startuml
 title Essai
@@ -391,3 +392,64 @@ def test_classic_preferences_window_switches_to_the_new_interface(tmp_path, conf
     finally:
         if not closed:
             root.destroy()
+
+
+SVG_PAGE = (b'<svg xmlns="http://www.w3.org/2000/svg" width="120px" height="80px" viewBox="0 0 120 80">'
+            b'<g class="entity" data-source-line="1"><rect x="10" y="20" width="30" height="40"/></g></svg>')
+
+
+class FakeRenderer:
+    def __init__(self):
+        self.seen = []
+
+    def svg_pages(self, text):
+        self.seen.append(text)
+        if 'mauvais' in text:
+            return render.Rendering([], 'Erreur PlantUML à la ligne 3 : Syntax Error?')
+        return render.Rendering([SVG_PAGE, SVG_PAGE])
+
+    def stop(self):
+        pass
+
+
+def serve(requests, monkeypatch, engine=object()):
+    out = io.BytesIO()
+    fake = FakeRenderer()
+    monkeypatch.setattr(render, 'find_engine', lambda: engine)
+    monkeypatch.setattr(render, 'preview_renderer', lambda _engine: fake)
+    data = b''.join(b'RENDER %s %d %d\n%s' % (rid, block, len(text), text) for rid, block, text in requests)
+    assert preview_server.serve(io.BytesIO(data), out) == 0
+    return out.getvalue(), fake
+
+
+def test_preview_server_speaks_the_renderer_protocol(monkeypatch):
+    text = b'@startuml\nclass A\n@enduml\n'
+    output, fake = serve([(b'7', 1, text), (b'8', 9, text)], monkeypatch)
+    assert fake.seen == [text.decode(), text.decode()]
+    assert output.startswith(b'PUMLRENDER 1\nID\t7\nKIND\tplantuml officiel\nBLOCKS\t2\nSIZE\t120\t80\n')
+    assert b'ID\t8\n' in output, 'un bloc disparu ramène au dernier'
+    # La ligne notée par PlantUML (depuis @start, à partir de 0) devient une ligne du document.
+    assert b'REGION\t2\t10\t20\t30\t40\n' in output
+    assert output.count(b'SVG\t%d\n' % len(SVG_PAGE)) == 2 and output.endswith(SVG_PAGE)
+
+
+def test_preview_server_reports_syntax_errors_and_missing_engine(monkeypatch):
+    output, _ = serve([(b'1', 0, b'mauvais')], monkeypatch)
+    assert b'DIAG\t3\terror\tErreur PlantUML' in output and b'SVG\t' in output
+    output, _ = serve([(b'2', 0, b'x')], monkeypatch, engine=None)
+    assert output == b'PUMLRENDER 1\nID\t2\nERROR\t' + preview_server.NOT_INSTALLED.encode() + b'\n'
+
+
+def test_preview_server_survives_an_invalid_request(monkeypatch):
+    out = io.BytesIO()
+    monkeypatch.setattr(render, 'find_engine', lambda: None)
+    assert preview_server.serve(io.BytesIO(b'BONJOUR\nRENDER 3 x 1\n'), out) == 0
+    assert out.getvalue().count('requête invalide'.encode()) == 2
+
+
+def test_preferences_of_the_new_interface_survive_a_classic_switch(config):
+    config.parent.mkdir(parents=True)
+    config.write_text('preview_engine = official\nsecurity_profile = folder\n', encoding='utf-8')
+    preferences.set_interface(preferences.CLASSIC)
+    saved = config.read_text(encoding='utf-8')
+    assert 'preview_engine = official' in saved and 'security_profile = folder' in saved

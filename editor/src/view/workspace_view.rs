@@ -15,7 +15,7 @@ use super::components::{button, choice, field, hint, separator, tooltip};
 use super::editor_view::EditorView;
 use super::preview_view::PreviewView;
 use super::theme;
-use crate::model::preferences::ThemeChoice;
+use crate::model::preferences::{PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::model::templates::TEMPLATES;
 use crate::viewmodel::document_vm::{DocumentEvent, DocumentViewModel};
 use crate::viewmodel::editor_vm::EditorViewModel;
@@ -366,6 +366,33 @@ impl WorkspaceView {
             .child(label("Autocomplétion :"))
             .child(choice("pref-ac-on", "Pendant la frappe", p.autocomplete).on_click(self.with_vm(|vm, cx| vm.set_autocomplete(true, cx), cx)))
             .child(choice("pref-ac-off", "Ctrl+Espace seulement", !p.autocomplete).on_click(self.with_vm(|vm, cx| vm.set_autocomplete(false, cx), cx)))
+            .child(separator())
+            .child(label("Aperçu :"))
+            .child(
+                choice("pref-engine-native", "Natif", p.preview_engine == PreviewEngine::Native)
+                    .tooltip(tooltip("pumlrender : instantané, sans dépendance, rendu approché"))
+                    .on_click(self.with_vm(|vm, cx| vm.set_preview_engine(PreviewEngine::Native, cx), cx)),
+            )
+            .child(
+                choice("pref-engine-official", "PlantUML officiel", p.preview_engine == PreviewEngine::Official)
+                    .tooltip(tooltip("Rendu fidèle ; à installer, plus lent et sans zones cliquables partout"))
+                    .on_click(self.with_vm(|vm, cx| vm.set_preview_engine(PreviewEngine::Official, cx), cx)),
+            )
+            .when(self.vm.read(cx).official_engine_missing(cx), |s| {
+                let installing = self.vm.read(cx).installing;
+                s.child(
+                    button("pref-install-official", if installing { "Installation…" } else { "Installer PlantUML" })
+                        .tooltip(tooltip("Télécharge PlantUML et, si besoin, Java, avec vérification de leur empreinte"))
+                        .on_click(self.with_vm(|vm, cx| vm.install_official_engine(cx), cx)),
+                )
+            })
+            .child(separator())
+            .child(label("Sécurité :"))
+            .children(SecurityProfile::ALL.iter().map(|&profile| {
+                choice(format!("pref-security-{}", profile.key()), profile.label(), p.security_profile == profile)
+                    .tooltip(tooltip(profile.description()))
+                    .on_click(self.with_vm(move |vm, cx| vm.set_security_profile(profile, cx), cx))
+            }))
             .child(separator())
             .child(label("Taille du texte :"))
             .child(button("pref-size-minus", "−").on_click(self.with_vm(|vm, cx| vm.change_code_size(-1, cx), cx)))

@@ -13,7 +13,10 @@ use std::time::{Duration, SystemTime};
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task};
 
 use crate::model::diagram::{RenderOutput, Severity};
+use crate::model::preferences::SecurityProfile;
+use crate::model::preflight::{self, NoFiles};
 use crate::model::svg_scene::Scene;
+use crate::services::include_service::DocumentFolder;
 use crate::services::render_service::RenderService;
 use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel, LineMark};
 
@@ -59,6 +62,8 @@ pub struct DocumentViewModel {
     pub render_pending: bool,
     pub block: usize,
     pub preview: PreviewState,
+    /// Ce que le diagramme a le droit de faire (préférences).
+    pub security_profile: SecurityProfile,
     service: Option<Arc<RenderService>>,
     render_task: Option<Task<()>>,
     _editor_subscription: Subscription,
@@ -97,6 +102,7 @@ impl DocumentViewModel {
                 viewport_h: 0.0,
                 hovered_region: None,
             },
+            security_profile: SecurityProfile::Macros,
             service,
             render_task: None,
             _editor_subscription: sub,
@@ -129,6 +135,20 @@ impl DocumentViewModel {
 
     // ------------------------------------------------------------ rendu
 
+    /// Change de moteur, ou de profil de sécurité : le texte est rendu à nouveau.
+    pub fn reconfigure(&mut self, service: Option<Arc<RenderService>>, profile: SecurityProfile, cx: &mut Context<Self>) {
+        self.service = service;
+        self.security_profile = profile;
+        self.render_error = None;
+        self.schedule_render(Duration::ZERO, cx);
+    }
+
+    /// Rendu à nouveau, avec les mêmes réglages (moteur qui vient d'être installé).
+    pub fn rerender(&mut self, cx: &mut Context<Self>) {
+        self.render_error = None;
+        self.schedule_render(Duration::ZERO, cx);
+    }
+
     pub fn schedule_render(&mut self, delay: Duration, cx: &mut Context<Self>) {
         let Some(service) = self.service.clone() else { return };
         self.render_pending = true;
@@ -137,16 +157,23 @@ impl DocumentViewModel {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
-            let Ok((text, version, block)) = this.update(cx, |this, cx| {
+            let Ok((text, version, block, profile, path)) = this.update(cx, |this, cx| {
                 let buffer = &this.editor.read(cx).buffer;
-                (buffer.text().to_string(), buffer.version(), this.block)
+                (buffer.text().to_string(), buffer.version(), this.block, this.security_profile, this.path.clone())
             }) else {
                 return;
             };
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let output = service.render(&text, block)?;
+                    // le profil s'applique ici : les deux moteurs reçoivent le même texte, sans lire de fichier
+                    let folder = (profile == SecurityProfile::Folder).then(|| path.as_deref().and_then(DocumentFolder::new)).flatten();
+                    let prepared = match &folder {
+                        Some((source, root)) => preflight::prepare(&text, profile, Some(root), source),
+                        None => preflight::prepare(&text, profile, None, &NoFiles),
+                    };
+                    let mut output = service.render(&prepared.text, block)?;
+                    prepared.apply(&mut output);
                     let scene = Scene::parse(&output.svg)?;
                     Ok::<_, String>((output, scene))
                 })

@@ -61,12 +61,73 @@ impl InterfaceChoice {
     }
 }
 
+/// Moteur de l'aperçu de cette interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewEngine {
+    /// `pumlrender` : instantané, sans dépendance, rendu approché
+    Native,
+    /// PlantUML : fidèle, à installer (Java ou binaire natif)
+    Official,
+}
+
+impl PreviewEngine {
+    const ALL: [PreviewEngine; 2] = [PreviewEngine::Native, PreviewEngine::Official];
+
+    fn key(self) -> &'static str {
+        match self {
+            PreviewEngine::Native => "native",
+            PreviewEngine::Official => "official",
+        }
+    }
+}
+
+/// Ce qu'un diagramme a le droit de faire ; appliqué avant le rendu (`model/preflight.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecurityProfile {
+    /// Ni préprocesseur ni fichier.
+    None,
+    /// `!define`, variables, conditions et procédures, sans accès aux fichiers.
+    Macros,
+    /// En plus, `!include` dans le dossier du document et ses sous-dossiers.
+    Folder,
+}
+
+impl SecurityProfile {
+    pub const ALL: [SecurityProfile; 3] = [SecurityProfile::None, SecurityProfile::Macros, SecurityProfile::Folder];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SecurityProfile::None => "Aucun",
+            SecurityProfile::Macros => "Macros",
+            SecurityProfile::Folder => "Dossier du document",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            SecurityProfile::None => "Préprocesseur désactivé : !define, variables et !include sont ignorés et signalés",
+            SecurityProfile::Macros => "!define, variables, conditions et procédures ; aucun fichier n'est lu",
+            SecurityProfile::Folder => "Macros, et !include limité au dossier du document et à ses sous-dossiers",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            SecurityProfile::None => "none",
+            SecurityProfile::Macros => "macros",
+            SecurityProfile::Folder => "folder",
+        }
+    }
+}
+
 pub const MIN_CODE_SIZE: u32 = 10;
 pub const MAX_CODE_SIZE: u32 = 28;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
     pub interface: InterfaceChoice,
+    pub preview_engine: PreviewEngine,
+    pub security_profile: SecurityProfile,
     pub theme: ThemeChoice,
     /// En thème sombre, adapter les couleurs du diagramme (sinon feuille claire).
     pub adapt_diagram: bool,
@@ -78,7 +139,13 @@ pub struct Preferences {
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { interface: InterfaceChoice::Editor, theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true, code_size: 14 }
+        Self {
+            interface: InterfaceChoice::Editor,
+            preview_engine: PreviewEngine::Native,
+            security_profile: SecurityProfile::Macros,
+            theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true,
+            code_size: 14,
+        }
     }
 }
 
@@ -107,6 +174,8 @@ impl Preferences {
             let (k, v) = (k.trim(), v.trim());
             let ok = match k {
                 "interface" => InterfaceChoice::ALL.iter().find(|c| c.key() == v).map(|c| p.interface = *c).is_some(),
+                "preview_engine" => PreviewEngine::ALL.iter().find(|c| c.key() == v).map(|c| p.preview_engine = *c).is_some(),
+                "security_profile" => SecurityProfile::ALL.iter().find(|c| c.key() == v).map(|c| p.security_profile = *c).is_some(),
                 "theme" => ThemeChoice::ALL.iter().find(|t| t.key() == v).map(|t| p.theme = *t).is_some(),
                 "adapt_diagram" => parse_bool(v).map(|b| p.adapt_diagram = b).is_some(),
                 "autocomplete" => parse_bool(v).map(|b| p.autocomplete = b).is_some(),
@@ -130,6 +199,11 @@ impl Preferences {
             "# Préférences de simp2puml, communes aux deux interfaces\n\
              # interface : editor (nouvelle) ou classic\n\
              interface = {}\n\
+             # moteur d'aperçu de la nouvelle interface : native ou official\n\
+             preview_engine = {}\n\
+             # none : pas de préprocesseur ; macros : !define et variables ;\n\
+             # folder : en plus, !include limité au dossier du document\n\
+             security_profile = {}\n\
              # theme : system, light ou dark\n\
              theme = {}\n\
              # en thème sombre, adapter les couleurs du diagramme (sinon feuille claire)\n\
@@ -139,6 +213,8 @@ impl Preferences {
              # taille du texte de l'éditeur, de {MIN_CODE_SIZE} à {MAX_CODE_SIZE}\n\
              code_size = {}\n",
             self.interface.key(),
+            self.preview_engine.key(),
+            self.security_profile.key(),
             self.theme.key(),
             self.adapt_diagram,
             self.autocomplete,
@@ -153,7 +229,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_defaults() {
-        let p = Preferences { interface: InterfaceChoice::Classic, theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
+        let p = Preferences { interface: InterfaceChoice::Classic, preview_engine: PreviewEngine::Official, security_profile: SecurityProfile::Folder, theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
         assert_eq!(Preferences::parse(&p.to_text()), (p, vec![]));
         assert_eq!(Preferences::parse("").0, Preferences::default());
     }
@@ -174,8 +250,18 @@ mod tests {
         let (p, ignored) = Preferences::parse(text);
         assert_eq!(ignored, Vec::<String>::new());
         assert_eq!(p.interface, InterfaceChoice::Classic);
+        assert_eq!(p.preview_engine, PreviewEngine::Official);
+        assert_eq!(p.security_profile, SecurityProfile::Folder);
         assert_eq!(p.theme, ThemeChoice::Dark);
         assert_eq!(p.code_size, 18);
+    }
+
+    #[test]
+    fn safe_defaults() {
+        let p = Preferences::default();
+        assert_eq!(p.preview_engine, PreviewEngine::Native);
+        assert_eq!(p.security_profile, SecurityProfile::Macros, "aucun fichier lu sans le demander");
+        assert_eq!(Preferences::parse("security_profile = tout\n").0.security_profile, SecurityProfile::Macros);
     }
 
     #[test]

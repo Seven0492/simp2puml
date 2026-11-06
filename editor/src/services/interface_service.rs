@@ -14,20 +14,8 @@ use crate::services::file_service;
 /// Un échec de démarrage se voit vite ; au-delà, la fenêtre est en train de s'ouvrir.
 const START_CHECK: Duration = Duration::from_millis(600);
 
-/// $SIMP2PUML_GUI, à côté de l'exécutable, dans le PATH (entrées absolues), sinon le module Python.
 fn classic_command() -> Command {
-    let mut cmd = if let Some(p) = std::env::var_os("SIMP2PUML_GUI") {
-        Command::new(p)
-    } else {
-        let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("simp2puml-gui")));
-        let in_path = std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).map(|d| d.join("simp2puml-gui")).collect::<Vec<_>>())
-            .unwrap_or_default();
-        match beside.into_iter().chain(in_path).find(|c| c.is_file()) {
-            Some(found) => Command::new(found),
-            None => file_service::python_module("simp2puml.launcher"),
-        }
-    };
+    let mut cmd = file_service::package_tool("SIMP2PUML_GUI", "simp2puml-gui", "simp2puml.launcher");
     cmd.arg("--interface").arg("classic");
     cmd
 }
