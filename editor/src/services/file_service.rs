@@ -78,6 +78,13 @@ pub fn save_document(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Empreinte d'un fichier sur le disque (date et taille) : permet de voir qu'un
+/// autre programme l'a modifié depuis l'ouverture ou le dernier enregistrement.
+pub fn disk_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 /// Écrit une nouvelle sortie ; refuse d'écraser un fichier existant.
 pub fn write_new(path: &Path, content: &str) -> Result<(), String> {
     if path.exists() || path.is_symlink() {
@@ -169,28 +176,26 @@ pub struct Conversion {
     pub messages: Vec<String>,
 }
 
+/// Message d'échec du convertisseur, sur une ligne : l'erreur de la ligne de
+/// commande sans l'usage complet qui la précède.
+fn failure_message(stderr: &str) -> Option<String> {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if let Some(message) = lines.iter().find_map(|l| l.split_once(": error: ").map(|(_, m)| m)) {
+        return Some(message.to_string());
+    }
+    (!lines.is_empty()).then(|| lines.join(" | "))
+}
+
+/// Lance le convertisseur ; ses messages (dont les avertissements) sont sur stderr.
 fn run(mut cmd: Command) -> Result<Vec<String>, String> {
     let out = cmd
         .output()
         .map_err(|e| format!("convertisseur simp2puml introuvable ({e}) ; installez-le ou définissez SIMP2PUML"))?;
-    let mut messages: Vec<String> = String::from_utf8_lossy(&out.stderr)
-        .lines()
-        .map(str::to_string)
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
-        if messages.is_empty() {
-            messages.push(format!("échec de la conversion ({})", out.status));
-        }
-        return Err(messages.join("\n"));
+        return Err(failure_message(&stderr).unwrap_or_else(|| format!("échec de la conversion ({})", out.status)));
     }
-    messages.extend(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| l.starts_with("Avertissement :"))
-            .map(str::to_string),
-    );
-    Ok(messages)
+    Ok(stderr.lines().map(str::to_string).filter(|l| !l.trim().is_empty()).collect())
 }
 
 /// Importe un fichier .simp en texte PlantUML (sans rien écrire à côté de la source).
@@ -240,6 +245,14 @@ mod tests {
         assert_eq!(read_text(&p).unwrap(), "3");
         let leftovers = fs::read_dir(&dir.0).unwrap().count();
         assert_eq!(leftovers, 1);
+    }
+
+    #[test]
+    fn converter_failure_keeps_only_the_error_line() {
+        let usage = "usage: simp2puml [-h]\n                 source\nsimp2puml: error: l'extension de sortie doit être .simp\n";
+        assert_eq!(failure_message(usage).as_deref(), Some("l'extension de sortie doit être .simp"));
+        assert_eq!(failure_message("Erreur : Ligne 5\n\nautre\n").as_deref(), Some("Erreur : Ligne 5 | autre"));
+        assert_eq!(failure_message(" \n"), None);
     }
 
     /// Premier enregistrement des préférences : le fichier n'existe pas encore.

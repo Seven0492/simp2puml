@@ -91,7 +91,7 @@ fn die_with_parent(cmd: &mut Command) {
 }
 
 pub struct RenderService {
-    exe: PathBuf,
+    pub exe: PathBuf,
     server: Mutex<Option<Server>>,
     next_id: AtomicU64,
     serve_unsupported: AtomicBool,
@@ -182,7 +182,7 @@ impl RenderService {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let died = |message: String| Failure { message, retry: true };
         let io = |e: std::io::Error| died(format!("échange avec le moteur de rendu : {e}"));
-        write!(server.stdin, "RENDER {id} {block} {}\n", text.len()).map_err(io)?;
+        writeln!(server.stdin, "RENDER {id} {block} {}", text.len()).map_err(io)?;
         server.stdin.write_all(text.as_bytes()).map_err(io)?;
         server.stdin.flush().map_err(io)?;
         let raw = match server.responses.recv_timeout(RENDER_TIMEOUT) {
@@ -244,6 +244,12 @@ fn render_once(exe: &Path, text: &str, block: usize) -> Result<RenderOutput, Str
         return Err(format!("le moteur de rendu a échoué : {}", String::from_utf8_lossy(&err).trim()));
     }
     parse_protocol(&out)
+}
+
+/// `$PUMLRENDER` défini mais qui ne désigne pas un fichier : à signaler, car un
+/// autre moteur que celui demandé serait utilisé sans que rien ne l'indique.
+pub fn invalid_override() -> Option<String> {
+    std::env::var_os("PUMLRENDER").map(PathBuf::from).filter(|p| !p.is_file()).map(|p| p.display().to_string())
 }
 
 fn exe_name() -> &'static str {

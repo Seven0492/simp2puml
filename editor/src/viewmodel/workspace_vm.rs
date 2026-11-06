@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription, WeakEntity};
 
-use crate::model::preferences::{Preferences, ThemeChoice};
+use crate::model::preferences::{MAX_CODE_SIZE, MIN_CODE_SIZE, Preferences, ThemeChoice};
 use crate::model::templates::{self, TEMPLATES};
 use crate::services::{file_service, preferences_service};
-use crate::services::render_service::RenderService;
+use crate::services::render_service::{self, RenderService};
 use crate::viewmodel::document_vm::DocumentViewModel;
 use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel};
 
@@ -41,6 +41,24 @@ impl PathPurpose {
     pub fn existing(self) -> bool {
         matches!(self, PathPurpose::Open | PathPurpose::ImportSimp)
     }
+
+    /// Extension ajoutée à un nom de sortie saisi sans extension.
+    fn default_extension(self) -> Option<&'static str> {
+        match self {
+            PathPurpose::SaveAs => Some("puml"),
+            PathPurpose::ExportSvg => Some("svg"),
+            PathPurpose::ExportSimp => Some("simp"),
+            PathPurpose::Open | PathPurpose::ImportSimp => None,
+        }
+    }
+
+    /// Chemin de sortie complété ; vrai si l'extension a été ajoutée.
+    fn complete_extension(self, path: PathBuf) -> (PathBuf, bool) {
+        match self.default_extension() {
+            Some(ext) if path.extension().is_none() && path.file_name().is_some() => (path.with_extension(ext), true),
+            _ => (path, false),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -51,6 +69,8 @@ pub enum WorkspaceEvent {
     ConfirmClose { document: Entity<DocumentViewModel>, name: String },
     /// Confirmer la sortie avec des documents modifiés.
     ConfirmQuit { names: Vec<String> },
+    /// Le fichier a changé sur le disque : confirmer son remplacement.
+    ConfirmOverwrite { document: Entity<DocumentViewModel>, path: PathBuf },
     Quit,
     /// Donner le focus à un champ (éditeur, recherche, chemin).
     Focus(Entity<EditorViewModel>),
@@ -103,7 +123,7 @@ impl WorkspaceViewModel {
                 _ => {}
             }),
             cx.subscribe(&replacement, |this, _, ev: &EditorEvent, cx| match ev {
-                EditorEvent::Submit => this.replace_all(cx),
+                EditorEvent::Submit => this.replace_next(cx),
                 EditorEvent::Cancel => this.close_find(cx),
                 EditorEvent::FocusPrev => cx.emit(WorkspaceEvent::Focus(this.find.query.clone())),
                 _ => {}
@@ -130,8 +150,13 @@ impl WorkspaceViewModel {
         if let Some(m) = preferences_message {
             ws.set_status(m, true, cx);
         }
-        if ws.service.is_none() {
-            ws.set_status("Moteur « pumlrender » introuvable : définissez PUMLRENDER ou construisez renderer/", true, cx);
+        match (&ws.service, render_service::invalid_override()) {
+            (None, _) => ws.set_status("Moteur « pumlrender » introuvable : définissez PUMLRENDER ou construisez renderer/", true, cx),
+            (Some(found), Some(wrong)) => {
+                let message = format!("PUMLRENDER ne désigne pas un fichier ({wrong}) : moteur utilisé : {}", found.exe.display());
+                ws.set_status(message, true, cx);
+            }
+            _ => {}
         }
         for p in paths {
             ws.open_path(p, cx);
@@ -168,8 +193,11 @@ impl WorkspaceViewModel {
     fn add_document(&mut self, path: Option<PathBuf>, title: String, text: &str, cx: &mut Context<Self>) {
         let service = self.service.clone();
         let doc = cx.new(|cx| DocumentViewModel::new(text, path, title, service, cx));
-        let autocomplete = self.preferences.autocomplete;
-        doc.read(cx).editor.clone().update(cx, |e, _| e.autocomplete = autocomplete);
+        let (autocomplete, code_size) = (self.preferences.autocomplete, self.preferences.code_size);
+        doc.read(cx).editor.clone().update(cx, |e, cx| {
+            e.autocomplete = autocomplete;
+            e.set_code_size(code_size as f32, cx);
+        });
         self.documents.push(doc);
         self.activate(self.documents.len() - 1, cx);
     }
@@ -274,20 +302,28 @@ impl WorkspaceViewModel {
             self.import_simp(path, cx);
             return;
         }
+        // empreinte relevée avant la lecture : une écriture entre les deux sera vue
+        let stamp = file_service::disk_stamp(&path);
         match file_service::read_text(&path) {
             Ok(text) => {
-                // l'onglet vide initial, jamais modifié, est remplacé
-                if self.documents.len() == 1 {
-                    let d = self.documents[0].read(cx);
-                    if d.path.is_none() && !d.editor.read(cx).buffer.is_dirty() {
-                        self.documents.clear();
-                    }
-                }
+                self.drop_pristine_tab(cx);
                 let title = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                self.set_status(format!("Ouvert : {title}"), false, cx);
                 self.add_document(Some(path.clone()), title, &text, cx);
-                self.set_status(format!("Ouvert : {}", path.display()), false, cx);
+                self.active_document().update(cx, |d, _| d.disk_stamp = stamp);
             }
             Err(e) => self.set_status(format!("Ouverture impossible : {e}"), true, cx),
+        }
+    }
+
+    /// L'onglet de départ, jamais enregistré ni modifié, laisse sa place au
+    /// premier fichier ouvert ou importé.
+    fn drop_pristine_tab(&mut self, cx: &App) {
+        if self.documents.len() == 1 {
+            let d = self.documents[0].read(cx);
+            if d.path.is_none() && !d.editor.read(cx).buffer.is_dirty() {
+                self.documents.clear();
+            }
         }
     }
 
@@ -303,6 +339,7 @@ impl WorkspaceViewModel {
             this.update(cx, |this, cx| match result {
                 Ok(conv) => {
                     let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    this.drop_pristine_tab(cx);
                     this.add_document(None, format!("{stem}.puml (importé)"), &conv.text, cx);
                     // jamais enregistré : la fermeture demandera confirmation
                     this.active_editor(cx).update(cx, |ed, _| ed.buffer.mark_unsaved());
@@ -324,9 +361,25 @@ impl WorkspaceViewModel {
 
     pub fn save(&mut self, cx: &mut Context<Self>) {
         let doc = self.active_document().clone();
-        match doc.read(cx).path.clone() {
-            Some(p) => self.save_to(&doc, p, true, cx),
+        let d = doc.read(cx);
+        match d.path.clone() {
+            Some(path) => {
+                // ne pas effacer sans le dire ce qu'un autre programme a écrit
+                let current = file_service::disk_stamp(&path);
+                if d.disk_stamp.is_some() && current.is_some() && current != d.disk_stamp {
+                    cx.emit(WorkspaceEvent::ConfirmOverwrite { document: doc, path });
+                } else {
+                    self.save_to(&doc, path, true, cx);
+                }
+            }
             None => self.request_path(PathPurpose::SaveAs, cx),
+        }
+    }
+
+    /// Réponse à `ConfirmOverwrite` : remplacer le fichier modifié sur le disque.
+    pub fn overwrite(&mut self, doc: &Entity<DocumentViewModel>, path: PathBuf, cx: &mut Context<Self>) {
+        if self.documents.contains(doc) {
+            self.save_to(doc, path, true, cx);
         }
     }
 
@@ -346,7 +399,9 @@ impl WorkspaceViewModel {
         };
         match result {
             Ok(()) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 doc.update(cx, |d, cx| {
+                    d.disk_stamp = file_service::disk_stamp(&path);
                     d.path = Some(path.clone());
                     d.editor.update(cx, |ed, cx| {
                         ed.buffer.mark_saved();
@@ -354,7 +409,7 @@ impl WorkspaceViewModel {
                     });
                     cx.notify();
                 });
-                self.set_status(format!("Enregistré : {}", path.display()), false, cx);
+                self.set_status(format!("Enregistré : {name}"), false, cx);
             }
             Err(e) => self.set_status(format!("Enregistrement impossible : {e}"), true, cx),
         }
@@ -423,6 +478,10 @@ impl WorkspaceViewModel {
             self.set_status("Le document visé a été fermé : action annulée", true, cx);
             return;
         }
+        // une extension ajoutée donne un autre fichier que celui confirmé par le
+        // sélecteur : il ne doit pas être remplacé sans confirmation
+        let (path, completed) = purpose.complete_extension(path);
+        let confirmed = confirmed && !completed;
         match purpose {
             PathPurpose::Open => self.open_path(path, cx),
             PathPurpose::ImportSimp => self.import_simp(path, cx),
@@ -532,6 +591,18 @@ impl WorkspaceViewModel {
         }
     }
 
+    /// Remplace l'occurrence sélectionnée, puis passe à la suivante.
+    pub fn replace_next(&mut self, cx: &mut Context<Self>) {
+        let with = self.find.replacement.read(cx).text().to_string();
+        self.active_editor(cx).update(cx, |e, cx| {
+            // la sélection n'est remplacée que si c'est bien une occurrence
+            if e.highlights.contains(&e.buffer.selection) {
+                e.replace_selection(&with, cx);
+            }
+        });
+        self.find_step(false, cx);
+    }
+
     pub fn replace_all(&mut self, cx: &mut Context<Self>) {
         let query = self.find.query.read(cx).text().to_string();
         let with = self.find.replacement.read(cx).text().to_string();
@@ -574,6 +645,15 @@ impl WorkspaceViewModel {
                     e.completions = None;
                 }
             });
+        }
+    }
+
+    /// Taille du texte de l'éditeur, pour tous les onglets.
+    pub fn change_code_size(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let size = self.preferences.code_size.saturating_add_signed(delta).clamp(MIN_CODE_SIZE, MAX_CODE_SIZE);
+        self.update_preferences(|p| p.code_size = size, cx);
+        for doc in &self.documents {
+            doc.read(cx).editor.clone().update(cx, |e, cx| e.set_code_size(size as f32, cx));
         }
     }
 
@@ -622,5 +702,22 @@ fn same_file_key(path: &Path) -> PathBuf {
             std::fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or_else(|_| path.to_path_buf())
         }
         _ => path.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_output_extension_is_completed_and_flagged() {
+        let out = |purpose: PathPurpose, path: &str| purpose.complete_extension(PathBuf::from(path));
+        assert_eq!(out(PathPurpose::SaveAs, "/d/a"), (PathBuf::from("/d/a.puml"), true));
+        assert_eq!(out(PathPurpose::ExportSvg, "a"), (PathBuf::from("a.svg"), true));
+        assert_eq!(out(PathPurpose::ExportSimp, "a"), (PathBuf::from("a.simp"), true));
+        // une extension choisie n'est jamais changée
+        assert_eq!(out(PathPurpose::SaveAs, "a.txt"), (PathBuf::from("a.txt"), false));
+        assert_eq!(out(PathPurpose::ExportSimp, "a.txt"), (PathBuf::from("a.txt"), false));
+        assert_eq!(out(PathPurpose::Open, "a"), (PathBuf::from("a"), false));
     }
 }

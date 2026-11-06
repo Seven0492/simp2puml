@@ -15,7 +15,6 @@ pub const UI_FONT: &str = ".SystemUIFont";
 pub const CODE_FONT: &str = "DejaVu Sans Mono";
 pub const DIAGRAM_FONT: &str = "DejaVu Sans";
 pub const DIAGRAM_MONO_FONT: &str = "DejaVu Sans Mono";
-pub const CODE_SIZE: f32 = 14.0;
 
 static DARK: AtomicBool = AtomicBool::new(false);
 static ADAPT_DIAGRAM: AtomicBool = AtomicBool::new(false);
@@ -124,6 +123,8 @@ mod tests {
 
     #[test]
     fn adapted_diagram_inverts_lightness_only_in_dark_mode() {
+        // la palette est globale : pas en même temps que les tests d'interface
+        let _guard = crate::view::interface_tests::INTERFACE.lock().unwrap_or_else(|e| e.into_inner());
         let black: Hsla = rgb(0x000000).into();
         set_appearance(false, true);
         assert_eq!(diagram(black), black);

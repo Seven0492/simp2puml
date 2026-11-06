@@ -21,7 +21,7 @@ use super::completion_menu::completion_menu;
 use super::theme;
 use crate::model::diagram::Severity;
 use crate::model::syntax::Token;
-use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel, LINE_HEIGHT, Motion};
+use crate::viewmodel::editor_vm::{EditorEvent, EditorViewModel, Motion};
 
 /// Mesures du dernier affichage, nécessaires pour convertir une position
 /// de souris en position dans le texte.
@@ -68,7 +68,7 @@ impl EditorView {
         let vm = self.vm.read(cx);
         let buffer = &vm.buffer;
         let y = f32::from(pos.y - bounds.top()) + vm.scroll_y;
-        let line = if vm.single_line { 0 } else { (y / LINE_HEIGHT).floor().max(0.0) as usize };
+        let line = if vm.single_line { 0 } else { (y / vm.line_height()).floor().max(0.0) as usize };
         if line >= buffer.line_count() {
             return buffer.len();
         }
@@ -104,7 +104,7 @@ impl EditorView {
     }
 
     fn on_scroll(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let d = ev.delta.pixel_delta(px(LINE_HEIGHT));
+        let d = ev.delta.pixel_delta(px(self.vm.read(cx).line_height()));
         let (dx, dy) = (f32::from(d.x), f32::from(d.y));
         let (dx, dy) = if ev.modifiers.shift && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
         self.vm.update(cx, |vm, cx| vm.scroll_by(dx, dy, cx));
@@ -167,10 +167,11 @@ impl EntityInputHandler for EditorView {
         let (_, shaped) = self.layout.lines.iter().find(|(l, _)| *l == line)?;
         let ls = b.line_start(line);
         let x = bounds.left() + px(self.layout.text_x - vm.scroll_x);
-        let y = bounds.top() + px(line as f32 * LINE_HEIGHT - vm.scroll_y);
+        let line_height = vm.line_height();
+        let y = bounds.top() + px(line as f32 * line_height - vm.scroll_y);
         Some(Bounds::from_corners(
             point(x + shaped.x_for_index(start - ls), y),
-            point(x + shaped.x_for_index(end.min(b.line_end(line)) - ls), y + px(LINE_HEIGHT)),
+            point(x + shaped.x_for_index(end.min(b.line_end(line)) - ls), y + px(line_height)),
         ))
     }
 
@@ -194,6 +195,7 @@ struct VisibleLine {
 
 /// Tout ce qui est calculé avant de peindre (une image).
 struct Frame {
+    line_height: f32,
     lines: Vec<VisibleLine>,
     gutter_w: f32,
     text_x: f32,
@@ -233,17 +235,21 @@ impl Element for EditorElement {
     }
 
     fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&gpui::InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
-        let single = self.view.read(cx).vm.read(cx).single_line;
+        let vm = self.view.read(cx).vm.read(cx);
+        let (single, line_height) = (vm.single_line, vm.line_height());
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = if single { px(LINE_HEIGHT).into() } else { relative(1.).into() };
+        style.size.height = if single { px(line_height).into() } else { relative(1.).into() };
         (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> Frame {
         let text_system = window.text_system().clone();
-        let font_size = px(theme::CODE_SIZE);
         let vm = self.view.read(cx).vm.clone();
+        let (font_size, line_height) = {
+            let v = vm.read(cx);
+            (px(v.code_size()), v.line_height())
+        };
         let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
 
         // gouttière : largeur selon le nombre de chiffres
@@ -265,8 +271,8 @@ impl Element for EditorElement {
             let v = vm.read(cx);
             (v.scroll_y, v.buffer.line_of(v.buffer.cursor()))
         };
-        let first = (scroll_y / LINE_HEIGHT).floor().max(0.0) as usize;
-        let last = (((scroll_y + height) / LINE_HEIGHT).ceil() as usize + 1).min(line_count);
+        let first = (scroll_y / line_height).floor().max(0.0) as usize;
+        let last = (((scroll_y + height) / line_height).ceil() as usize + 1).min(line_count);
 
         // lignes visibles uniquement (virtualisation)
         let mut lines = Vec::with_capacity(last.saturating_sub(first));
@@ -280,9 +286,9 @@ impl Element for EditorElement {
             let number = (!single).then(|| {
                 let s = (l + 1).to_string();
                 let color = if l == cursor_line { theme::text() } else { theme::faint() };
-                text_system.shape_line(SharedString::from(s.clone()), px(12.5), &[code_run(s.len(), color.into(), false)], None)
+                text_system.shape_line(SharedString::from(s.clone()), font_size - px(1.5), &[code_run(s.len(), color.into(), false)], None)
             });
-            lines.push(VisibleLine { y: l as f32 * LINE_HEIGHT - scroll_y, shaped, number });
+            lines.push(VisibleLine { y: l as f32 * line_height - scroll_y, shaped, number });
         }
 
         // défilement horizontal vers le curseur
@@ -303,7 +309,7 @@ impl Element for EditorElement {
         for (i, vl) in lines.iter().enumerate() {
             let l = first + i;
             let (ls, le) = (b.line_start(l), b.line_end(l));
-            let (y0, y1) = (top + px(vl.y), top + px(vl.y + LINE_HEIGHT));
+            let (y0, y1) = (top + px(vl.y), top + px(vl.y + line_height));
             if !sel.is_empty() && sel.start <= le && sel.end >= ls {
                 let mut x1 = x_at(vl, sel.end.min(le) - ls);
                 if sel.end > le {
@@ -317,16 +323,16 @@ impl Element for EditorElement {
         }
         let cursor = lines.get(cursor_line.wrapping_sub(first)).map(|vl| {
             let x = x_at(vl, b.cursor() - b.line_start(cursor_line));
-            Bounds::new(point(x, top + px(vl.y + 2.0)), size(px(2.0), px(LINE_HEIGHT - 4.0)))
+            Bounds::new(point(x, top + px(vl.y + 2.0)), size(px(2.0), px(line_height - 4.0)))
         });
         let current_line = (!single && !b.has_selection()).then(|| {
-            Bounds::new(point(bounds.left(), top + px(cursor_line as f32 * LINE_HEIGHT - v.scroll_y)), size(bounds.size.width, px(LINE_HEIGHT)))
+            Bounds::new(point(bounds.left(), top + px(cursor_line as f32 * line_height - v.scroll_y)), size(bounds.size.width, px(line_height)))
         });
         let marks = v
             .line_marks
             .iter()
             .filter(|m| m.line >= first && m.line < last)
-            .map(|m| (m.line as f32 * LINE_HEIGHT - v.scroll_y, m.severity))
+            .map(|m| (m.line as f32 * line_height - v.scroll_y, m.severity))
             .collect();
         let placeholder = (b.is_empty() && !v.placeholder.is_empty()).then(|| {
             let p = v.placeholder.clone();
@@ -339,7 +345,7 @@ impl Element for EditorElement {
             let cursor_anchor = cursor.map(|c| point(c.left(), c.bottom() + px(2.0)));
             view.layout = LayoutCache { bounds: Some(bounds), lines: view_lines, text_x, cursor_anchor };
         });
-        Frame { lines, gutter_w, text_x, selections, matches, cursor, current_line, marks, placeholder }
+        Frame { line_height, lines, gutter_w, text_x, selections, matches, cursor, current_line, marks, placeholder }
     }
 
     fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), frame: &mut Frame, window: &mut Window, cx: &mut App) {
@@ -352,7 +358,7 @@ impl Element for EditorElement {
             }
             for (y, sev) in &frame.marks {
                 if *sev == Severity::Error {
-                    let b = Bounds::new(point(bounds.left() + px(frame.gutter_w), bounds.top() + px(*y)), size(bounds.size.width, px(LINE_HEIGHT)));
+                    let b = Bounds::new(point(bounds.left() + px(frame.gutter_w), bounds.top() + px(*y)), size(bounds.size.width, px(frame.line_height)));
                     window.paint_quad(fill(b, theme::error_line()));
                 }
             }
@@ -367,10 +373,10 @@ impl Element for EditorElement {
             window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
                 let x = bounds.left() + px(frame.text_x - scroll_x);
                 if let Some(p) = &frame.placeholder {
-                    let _ = p.paint(point(x, bounds.top()), px(LINE_HEIGHT), window, cx);
+                    let _ = p.paint(point(x, bounds.top()), px(frame.line_height), window, cx);
                 }
                 for vl in &frame.lines {
-                    let _ = vl.shaped.paint(point(x, bounds.top() + px(vl.y)), px(LINE_HEIGHT), window, cx);
+                    let _ = vl.shaped.paint(point(x, bounds.top() + px(vl.y)), px(frame.line_height), window, cx);
                 }
                 if focus.is_focused(window) {
                     if let Some(c) = frame.cursor {
@@ -392,11 +398,11 @@ fn paint_gutter(frame: &Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: 
     for vl in &frame.lines {
         if let Some(n) = &vl.number {
             let x = bounds.left() + w - px(10.0) - n.width;
-            let _ = n.paint(point(x, bounds.top() + px(vl.y + 1.5)), px(LINE_HEIGHT - 3.0), window, cx);
+            let _ = n.paint(point(x, bounds.top() + px(vl.y + 1.5)), px(frame.line_height - 3.0), window, cx);
         }
     }
     for (y, sev) in &frame.marks {
-        let dot = Bounds::new(point(bounds.left() + px(5.0), bounds.top() + px(y + 6.0)), size(px(8.0), px(8.0)));
+        let dot = Bounds::new(point(bounds.left() + px(5.0), bounds.top() + px(y + (frame.line_height - 8.0) / 2.0)), size(px(8.0), px(8.0)));
         window.paint_quad(fill(dot, theme::severity(*sev)).corner_radii(px(4.0)));
     }
 }

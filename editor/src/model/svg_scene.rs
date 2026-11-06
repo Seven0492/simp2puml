@@ -387,7 +387,7 @@ pub fn parse_path(d: &str, ox: f32, oy: f32) -> Vec<PathCmd> {
             'M' | 'L' => {
                 let (Some(x), Some(y)) = (next(&mut t), next(&mut t)) else { break };
                 let p = pt(x, y);
-                if cmd.to_ascii_uppercase() == 'M' {
+                if cmd.eq_ignore_ascii_case(&'M') {
                     out.push(PathCmd::Move(p));
                     start = p;
                     // les paires suivantes d'un M sont des L

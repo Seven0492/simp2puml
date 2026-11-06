@@ -4,19 +4,28 @@ use gpui::{AnyElement, AnyView, App, AppContext, Context, Div, ElementId, Shared
 
 use super::theme;
 
-/// Bouton plat de barre d'outils.
-pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+/// Base commune des boutons, sans états de survol.
+fn plain_button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(ElementId::Name(id.into()))
+        // sélecteur des tests d'interface (sans effet hors des tests)
+        .debug_selector({
+            let id = id.clone();
+            move || id.to_string()
+        })
+        .id(ElementId::Name(id))
         .px_2()
         .py_1()
         .rounded_md()
         .text_size(px(13.))
         .text_color(theme::text())
         .cursor_pointer()
-        .hover(|s| s.bg(theme::hover()))
-        .active(|s| s.bg(theme::pressed()))
         .child(label.into())
+}
+
+/// Bouton plat de barre d'outils.
+pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    plain_button(id, label).hover(|s| s.bg(theme::hover())).active(|s| s.bg(theme::pressed()))
 }
 
 /// Cadre d'un champ de saisie d'une ligne.
@@ -39,20 +48,24 @@ pub fn field(content: impl IntoElement, width: Option<f32>) -> Div {
 
 /// Choix d'un groupe de boutons exclusifs ; le choix courant est mis en évidence.
 pub fn choice(id: impl Into<SharedString>, label: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
-    let b = button(id, label).border_1().border_color(theme::field_border());
+    let b = plain_button(id, label).border_1();
     if selected {
-        b.bg(theme::accent()).text_color(theme::on_accent()).border_color(theme::accent()).hover(|s| s.bg(theme::accent()))
+        b.bg(theme::accent()).text_color(theme::on_accent()).border_color(theme::accent())
     } else {
         b.bg(theme::surface())
+            .border_color(theme::field_border())
+            .hover(|s| s.bg(theme::hover()))
+            .active(|s| s.bg(theme::pressed()))
     }
 }
 
 /// Infobulle simple (texte), pour `.tooltip(...)`.
-pub fn tooltip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |_, cx| cx.new(|_| Tooltip(text)).into()
+pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| cx.new(|_| Tooltip(text.clone())).into()
 }
 
-struct Tooltip(&'static str);
+struct Tooltip(SharedString);
 
 impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -65,7 +78,7 @@ impl Render for Tooltip {
             .border_color(theme::field_border())
             .text_size(px(12.))
             .text_color(theme::text())
-            .child(self.0)
+            .child(self.0.clone())
     }
 }
 

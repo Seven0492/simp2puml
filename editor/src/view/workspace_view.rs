@@ -29,6 +29,8 @@ pub struct WorkspaceView {
     document_subscriptions: HashMap<EntityId, Subscription>,
     focus_handle: FocusHandle,
     dragging_split: bool,
+    /// Dernier titre donné à la fenêtre (il suit le texte et l'onglet actif).
+    title: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -41,8 +43,7 @@ impl Focusable for WorkspaceView {
 impl WorkspaceView {
     pub fn new(vm: Entity<WorkspaceViewModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let subs = vec![
-            cx.observe_in(&vm, window, |this, vm, window, cx| {
-                window.set_window_title(&vm.read(cx).window_title(cx));
+            cx.observe_in(&vm, window, |this, _, _, cx| {
                 this.forget_closed_documents(cx);
                 cx.notify();
             }),
@@ -71,13 +72,18 @@ impl WorkspaceView {
             document_subscriptions: HashMap::new(),
             focus_handle: cx.focus_handle(),
             dragging_split: false,
+            title: String::new(),
             _subscriptions: subs,
         };
         let editor = vm.read(cx).active_editor(cx);
         let ev = view.editor_view(&editor, window, cx);
         window.focus(&ev.focus_handle(cx));
-        window.set_window_title(&vm.read(cx).window_title(cx));
         view
+    }
+
+    #[cfg(test)]
+    pub fn view_model(&self) -> Entity<WorkspaceViewModel> {
+        self.vm.clone()
     }
 
     /// Vue d'édition associée à un ViewModel (créée à la demande).
@@ -90,17 +96,16 @@ impl WorkspaceView {
 
     fn preview_view(&mut self, doc: &Entity<DocumentViewModel>, window: &mut Window, cx: &mut Context<Self>) -> Entity<PreviewView> {
         let id = doc.entity_id();
-        if !self.document_subscriptions.contains_key(&id) {
-            let sub = cx.subscribe_in(doc, window, |this, doc, ev: &DocumentEvent, window, cx| {
+        self.document_subscriptions.entry(id).or_insert_with(|| {
+            cx.subscribe_in(doc, window, |this, doc, ev: &DocumentEvent, window, cx| {
                 if let DocumentEvent::JumpToLine(line) = ev {
                     let editor = doc.read(cx).editor.clone();
                     editor.update(cx, |e, cx| e.go_to_line(line - 1, cx));
                     let view = this.editor_view(&editor, window, cx);
                     window.focus(&view.focus_handle(cx));
                 }
-            });
-            self.document_subscriptions.insert(id, sub);
-        }
+            })
+        });
         self.previews.entry(id).or_insert_with(|| cx.new(|cx| PreviewView::new(doc.clone(), cx))).clone()
     }
 
@@ -160,6 +165,22 @@ impl WorkspaceView {
                 cx.spawn(async move |_, cx| {
                     if let Ok(0) = answer.await {
                         cx.update(|cx| cx.quit()).ok();
+                    }
+                })
+                .detach();
+            }
+            WorkspaceEvent::ConfirmOverwrite { document, path } => {
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    &format!("« {} » a changé sur le disque", path.display()),
+                    Some("Un autre programme l'a modifié. L'enregistrer maintenant remplace ces modifications."),
+                    &["Remplacer", "Annuler"],
+                    cx,
+                );
+                let vm = self.vm.clone();
+                cx.spawn(async move |_, cx| {
+                    if let Ok(0) = answer.await {
+                        vm.update(cx, |vm, cx| vm.overwrite(&document, path, cx)).ok();
                     }
                 })
                 .detach();
@@ -314,6 +335,11 @@ impl WorkspaceView {
             .child(label("Autocomplétion :"))
             .child(choice("pref-ac-on", "Pendant la frappe", p.autocomplete).on_click(self.with_vm(|vm, cx| vm.set_autocomplete(true, cx), cx)))
             .child(choice("pref-ac-off", "Ctrl+Espace seulement", !p.autocomplete).on_click(self.with_vm(|vm, cx| vm.set_autocomplete(false, cx), cx)))
+            .child(separator())
+            .child(label("Taille du texte :"))
+            .child(button("pref-size-minus", "−").on_click(self.with_vm(|vm, cx| vm.change_code_size(-1, cx), cx)))
+            .child(div().text_size(px(13.)).text_color(theme::text()).child(p.code_size.to_string()))
+            .child(button("pref-size-plus", "+").on_click(self.with_vm(|vm, cx| vm.change_code_size(1, cx), cx)))
             .child(div().flex_1())
             .child(button("pref-close", "×").tooltip(tooltip("Fermer les préférences")).on_click(self.with_vm(|vm, cx| vm.toggle_preferences(cx), cx)))
     }
@@ -381,6 +407,7 @@ impl WorkspaceView {
             .child(button("find-next", "↓").on_click(self.with_vm(|vm, cx| vm.find_step(false, cx), cx)))
             .child(hint(format!("{count} résultat(s)")))
             .child(field(replacement_view, Some(220.)))
+            .child(button("replace-next", "Remplacer").on_click(self.with_vm(|vm, cx| vm.replace_next(cx), cx)))
             .child(button("replace-all", "Tout remplacer").on_click(self.with_vm(|vm, cx| vm.replace_all(cx), cx)))
             .child(div().flex_1())
             .child(button("find-close", "×").on_click(self.with_vm(|vm, cx| vm.close_find(cx), cx)))
@@ -492,7 +519,9 @@ impl WorkspaceView {
         let (line, col) = doc.editor.read(cx).cursor_line_col();
         let (errors, warnings) = doc.diagnostic_counts();
         let (kind, blocks) = doc.output().map(|o| (o.kind.clone(), o.blocks)).unwrap_or_default();
-        let state = if doc.render_error.is_some() && !doc.render_pending {
+        let state = if !doc.has_renderer() {
+            "moteur absent"
+        } else if doc.render_error.is_some() && !doc.render_pending {
             "erreur de rendu"
         } else if doc.is_up_to_date(cx) {
             "à jour"
@@ -527,13 +556,17 @@ impl WorkspaceView {
             .child(state)
             .child(
                 div()
+                    .id("status-message")
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .when_some(status, |s, st| {
-                        s.when(st.is_error, |s| s.text_color(theme::severity(crate::model::diagram::Severity::Error))).child(st.message)
+                        // un message trop long pour la barre reste lisible en entier au survol
+                        s.when(st.is_error, |s| s.text_color(theme::severity(crate::model::diagram::Severity::Error)))
+                            .tooltip(tooltip(st.message.clone()))
+                            .child(st.message)
                     }),
             )
             .child(div().max_w(px(420.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(SharedString::from(path)))
@@ -577,6 +610,11 @@ impl Render for WorkspaceView {
                 ws.preferences_open,
             )
         };
+        let title = self.vm.read(cx).window_title(cx);
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
         let editor_vm = doc.read(cx).editor.clone();
         let editor = self.editor_view(&editor_vm, window, cx);
         let preview = self.preview_view(&doc, window, cx);

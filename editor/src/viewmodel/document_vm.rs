@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task};
 
@@ -51,6 +51,8 @@ pub struct PreviewState {
 pub struct DocumentViewModel {
     pub editor: Entity<EditorViewModel>,
     pub path: Option<PathBuf>,
+    /// Date et taille du fichier à l'ouverture ou au dernier enregistrement.
+    pub disk_stamp: Option<(SystemTime, u64)>,
     title: String,
     pub rendering: Option<Rendering>,
     pub render_error: Option<String>,
@@ -81,6 +83,7 @@ impl DocumentViewModel {
         let mut doc = Self {
             editor,
             path,
+            disk_stamp: None,
             title,
             rendering: None,
             render_error: None,

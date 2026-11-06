@@ -13,7 +13,9 @@ use crate::model::completion::{self, CompletionList};
 use crate::model::diagram::Severity;
 use crate::model::syntax::{SyntaxCache, Token};
 
-pub const LINE_HEIGHT: f32 = 20.0;
+/// Taille du texte et hauteur de ligne d'un champ d'une ligne (recherche, chemin).
+const FIELD_CODE_SIZE: f32 = 14.0;
+const FIELD_LINE_HEIGHT: f32 = 20.0;
 
 #[derive(Clone, Debug)]
 pub enum EditorEvent {
@@ -79,6 +81,8 @@ pub struct EditorViewModel {
     pub completions: Option<CompletionMenu>,
     /// Préférence : ouvrir le menu pendant la frappe (sinon Ctrl+Espace seulement).
     pub autocomplete: bool,
+    /// Préférence : taille du texte de l'éditeur multiligne.
+    code_size: f32,
 }
 
 impl EventEmitter<EditorEvent> for EditorViewModel {}
@@ -100,7 +104,26 @@ impl EditorViewModel {
             autoscroll: true,
             completions: None,
             autocomplete: true,
+            code_size: FIELD_CODE_SIZE,
         }
+    }
+
+    pub fn code_size(&self) -> f32 {
+        if self.single_line { FIELD_CODE_SIZE } else { self.code_size }
+    }
+
+    pub fn line_height(&self) -> f32 {
+        if self.single_line { FIELD_LINE_HEIGHT } else { (self.code_size * 1.43).round() }
+    }
+
+    /// Change la taille du texte en gardant la même ligne en haut de la zone.
+    pub fn set_code_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        let ratio = size / self.code_size;
+        self.code_size = size;
+        self.scroll_x *= ratio;
+        self.scroll_y = (self.scroll_y * ratio).round();
+        self.autoscroll = true;
+        cx.notify();
     }
 
     pub fn text(&self) -> &str {
@@ -152,12 +175,13 @@ impl EditorViewModel {
         if !self.autoscroll {
             return;
         }
-        let y = self.buffer.line_of(self.buffer.cursor()) as f32 * LINE_HEIGHT;
+        let line_height = self.line_height();
+        let y = self.buffer.line_of(self.buffer.cursor()) as f32 * line_height;
         let height = self.viewport.1;
         if y < self.scroll_y {
             self.scroll_y = y;
-        } else if y + LINE_HEIGHT > self.scroll_y + height {
-            self.scroll_y = y + LINE_HEIGHT - height;
+        } else if y + line_height > self.scroll_y + height {
+            self.scroll_y = y + line_height - height;
         }
         if self.single_line {
             self.scroll_y = 0.0;
@@ -180,7 +204,7 @@ impl EditorViewModel {
     }
 
     pub fn scroll_by(&mut self, dx: f32, dy: f32, cx: &mut Context<Self>) {
-        let max_y = (self.buffer.line_count() as f32 * LINE_HEIGHT - self.viewport.1 / 2.0).max(0.0);
+        let max_y = (self.buffer.line_count() as f32 * self.line_height() - self.viewport.1 / 2.0).max(0.0);
         self.scroll_y = (self.scroll_y - dy).clamp(0.0, max_y);
         self.scroll_x = (self.scroll_x - dx).max(0.0);
         if self.single_line {
@@ -272,6 +296,7 @@ impl EditorViewModel {
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
         self.completions = None;
+        self.marked_range = None;
         if self.buffer.undo() {
             self.changed(cx);
         }
@@ -279,6 +304,7 @@ impl EditorViewModel {
 
     pub fn redo(&mut self, cx: &mut Context<Self>) {
         self.completions = None;
+        self.marked_range = None;
         if self.buffer.redo() {
             self.changed(cx);
         }
@@ -291,6 +317,13 @@ impl EditorViewModel {
             self.changed(cx);
         }
         n
+    }
+
+    /// Remplace la sélection (sans ouvrir l'autocomplétion, contrairement à la frappe).
+    pub fn replace_selection(&mut self, with: &str, cx: &mut Context<Self>) {
+        self.completions = None;
+        self.buffer.insert(with);
+        self.changed(cx);
     }
 
     // ------------------------------------------------------------ commandes : presse-papiers
@@ -334,7 +367,7 @@ impl EditorViewModel {
     // ------------------------------------------------------------ commandes : curseur
 
     pub fn move_cursor(&mut self, motion: Motion, select: bool, cx: &mut Context<Self>) {
-        let page = ((self.viewport.1 / LINE_HEIGHT) as isize - 2).max(1);
+        let page = ((self.viewport.1 / self.line_height()) as isize - 2).max(1);
         let b = &mut self.buffer;
         match motion {
             Motion::Left => b.move_left(select, false),
@@ -406,9 +439,10 @@ impl EditorViewModel {
         let start = self.buffer.line_start(l);
         self.buffer.set_cursor(start + indent);
         // centrer la ligne seulement si elle est hors de la zone visible
-        let y = l as f32 * LINE_HEIGHT;
+        let line_height = self.line_height();
+        let y = l as f32 * line_height;
         let height = self.viewport.1;
-        if height > 0.0 && (y < self.scroll_y || y + LINE_HEIGHT > self.scroll_y + height) {
+        if height > 0.0 && (y < self.scroll_y || y + line_height > self.scroll_y + height) {
             self.scroll_y = (y - height / 3.0).max(0.0);
         }
         self.moved(cx);

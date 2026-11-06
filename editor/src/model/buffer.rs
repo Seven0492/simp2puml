@@ -291,6 +291,9 @@ impl Buffer {
     pub fn select_all(&mut self) {
         self.selection = 0..self.text.len();
         self.reversed = false;
+        self.goal_column = None;
+        // une suppression qui suit ne se fond pas dans la frappe ou l'effacement précédents
+        self.break_coalescing();
     }
 
     pub fn prev_char(&self, offset: usize) -> usize {
@@ -523,9 +526,7 @@ impl Buffer {
     pub fn replace_range(&mut self, range: Range<usize>, new: &str) {
         let kind = if new.is_empty() {
             EditKind::Delete
-        } else if range.is_empty() && !new.contains(char::is_whitespace) {
-            EditKind::Insert
-        } else if range.is_empty() && new == " " {
+        } else if range.is_empty() && (!new.contains(char::is_whitespace) || new == " ") {
             EditKind::Insert
         } else {
             EditKind::Other
@@ -865,6 +866,18 @@ mod tests {
         b.redo();
         assert_eq!(b.text(), "class");
         assert_eq!(b.cursor(), 5);
+    }
+
+    #[test]
+    fn select_all_starts_a_new_undo_step() {
+        let mut b = Buffer::new("abc");
+        b.set_cursor(3);
+        b.backspace(false);
+        b.select_all();
+        b.backspace(false);
+        assert_eq!(b.text(), "");
+        b.undo();
+        assert_eq!(b.text(), "ab", "seule la suppression de la sélection est annulée");
     }
 
     #[test]

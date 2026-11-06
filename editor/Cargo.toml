@@ -15,6 +15,10 @@ gpui = "0.2.2"
 # lecture du SVG de l'aperçu vectoriel (déjà utilisé par gpui, même version)
 roxmltree = "0.20"
 
+[dev-dependencies]
+# plateforme de test sans fenêtre : parcours réels de l'interface (clics, raccourcis)
+gpui = { version = "0.2.2", features = ["test-support"] }
+
 [profile.dev]
 opt-level = 1
 

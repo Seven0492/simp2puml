@@ -8,3 +8,6 @@ pub mod editor_view;
 pub mod preview_view;
 pub mod theme;
 pub mod workspace_view;
+
+#[cfg(test)]
+mod interface_tests;

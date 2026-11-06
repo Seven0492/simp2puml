@@ -40,6 +40,9 @@ impl ThemeChoice {
     }
 }
 
+pub const MIN_CODE_SIZE: u32 = 10;
+pub const MAX_CODE_SIZE: u32 = 28;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
     pub theme: ThemeChoice,
@@ -47,11 +50,13 @@ pub struct Preferences {
     pub adapt_diagram: bool,
     /// Ouvrir l'autocomplétion pendant la frappe (Ctrl+Espace reste disponible).
     pub autocomplete: bool,
+    /// Taille du texte de l'éditeur, en points.
+    pub code_size: u32,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true }
+        Self { theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true, code_size: 14 }
     }
 }
 
@@ -82,6 +87,12 @@ impl Preferences {
                 "theme" => ThemeChoice::ALL.iter().find(|t| t.key() == v).map(|t| p.theme = *t).is_some(),
                 "adapt_diagram" => parse_bool(v).map(|b| p.adapt_diagram = b).is_some(),
                 "autocomplete" => parse_bool(v).map(|b| p.autocomplete = b).is_some(),
+                "code_size" => v
+                    .parse()
+                    .ok()
+                    .filter(|n| (MIN_CODE_SIZE..=MAX_CODE_SIZE).contains(n))
+                    .map(|n| p.code_size = n)
+                    .is_some(),
                 _ => false,
             };
             if !ok {
@@ -99,10 +110,13 @@ impl Preferences {
              # en thème sombre, adapter les couleurs du diagramme (sinon feuille claire)\n\
              adapt_diagram = {}\n\
              # ouvrir l'autocomplétion pendant la frappe (Ctrl+Espace reste disponible)\n\
-             autocomplete = {}\n",
+             autocomplete = {}\n\
+             # taille du texte de l'éditeur, de {MIN_CODE_SIZE} à {MAX_CODE_SIZE}\n\
+             code_size = {}\n",
             self.theme.key(),
             self.adapt_diagram,
-            self.autocomplete
+            self.autocomplete,
+            self.code_size
         )
     }
 }
@@ -113,7 +127,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_defaults() {
-        let p = Preferences { theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false };
+        let p = Preferences { theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
         assert_eq!(Preferences::parse(&p.to_text()), (p, vec![]));
         assert_eq!(Preferences::parse("").0, Preferences::default());
     }
@@ -125,6 +139,13 @@ mod tests {
         assert!(!p.autocomplete);
         assert_eq!(ignored.len(), 3);
         assert!(ignored[0].starts_with("ligne 1"));
+    }
+
+    #[test]
+    fn code_size_out_of_range_is_ignored() {
+        let (p, ignored) = Preferences::parse("code_size = 16\ncode_size = 99\ncode_size = x\n");
+        assert_eq!(p.code_size, 16);
+        assert_eq!(ignored.len(), 2);
     }
 
     #[test]
