@@ -748,6 +748,14 @@ impl WorkspaceViewModel {
     /// Taille du texte de l'éditeur, pour tous les onglets.
     pub fn change_code_size(&mut self, delta: i32, cx: &mut Context<Self>) {
         let size = self.preferences.code_size.saturating_add_signed(delta).clamp(MIN_CODE_SIZE, MAX_CODE_SIZE);
+        self.set_code_size(size, cx);
+    }
+
+    pub fn reset_code_size(&mut self, cx: &mut Context<Self>) {
+        self.set_code_size(Preferences::default().code_size, cx);
+    }
+
+    fn set_code_size(&mut self, size: u32, cx: &mut Context<Self>) {
         self.update_preferences(|p| p.code_size = size, cx);
         for doc in &self.documents {
             doc.read(cx).editor.clone().update(cx, |e, cx| e.set_code_size(size as f32, cx));

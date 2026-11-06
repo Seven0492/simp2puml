@@ -413,6 +413,17 @@ fn zoom_keys_follow_the_focus(cx: &mut TestAppContext) {
     assert_eq!(editor.read_with(s.window, |e, _| e.code_size()), 13.0, "l'éditeur suit");
     assert_eq!(preferences_service::load().0.code_size, 13, "enregistré");
 
+    // Ctrl+0 remet le texte à sa taille par défaut, sans toucher au diagramme
+    doc.update(s.window, |d, cx| d.zoom_by(2.0, cx));
+    s.window.simulate_keystrokes("ctrl-0");
+    s.window.run_until_parked();
+    assert_eq!((code(&s), zoom(&s)), (14, 2.0));
+    assert_eq!(editor.read_with(s.window, |e, _| e.code_size()), 14.0);
+    doc.update(s.window, |d, cx| d.zoom_reset(cx));
+    s.window.simulate_keystrokes("ctrl--");
+    s.window.run_until_parked();
+    assert_eq!((code(&s), zoom(&s)), (13, 1.0));
+
     // un clic dans le vide de l'aperçu y met le focus : les mêmes touches zooment le diagramme
     let preview = s.window.debug_bounds("preview").expect("aperçu");
     s.window.simulate_click(preview.bottom_right() - gpui::point(gpui::px(4.), gpui::px(4.)), Modifiers::none());
@@ -421,6 +432,12 @@ fn zoom_keys_follow_the_focus(cx: &mut TestAppContext) {
     s.window.run_until_parked();
     assert_eq!((code(&s), zoom(&s)), (13, 1.25));
     s.window.simulate_keystrokes("ctrl--");
+    s.window.run_until_parked();
+    assert_eq!((code(&s), zoom(&s)), (13, 1.0));
+
+    // depuis l'aperçu, Ctrl+0 remet le zoom du diagramme, pas le texte
+    s.window.simulate_keystrokes("ctrl-=");
+    s.window.simulate_keystrokes("ctrl-0");
     s.window.run_until_parked();
     assert_eq!((code(&s), zoom(&s)), (13, 1.0));
 

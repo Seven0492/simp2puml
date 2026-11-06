@@ -108,6 +108,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-=", w::IncreaseCodeSize, ed),
         KeyBinding::new("secondary-+", w::IncreaseCodeSize, ed),
         KeyBinding::new("secondary--", w::DecreaseCodeSize, ed),
+        KeyBinding::new("secondary-0", w::ResetCodeSize, ed),
     ]);
     b
 }

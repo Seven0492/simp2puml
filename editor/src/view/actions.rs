@@ -24,7 +24,7 @@ actions!(
         ExportSvg, ImportSimp, ExportSimp,
         Find, FindNext, FindPrev, ReplaceAll,
         ZoomIn, ZoomOut, ZoomReset, ZoomFit,
-        IncreaseCodeSize, DecreaseCodeSize,
+        IncreaseCodeSize, DecreaseCodeSize, ResetCodeSize,
         ToggleDiagnostics, ToggleTemplates, TogglePreferences, NextBlock, PrevBlock, Quit,
     ]
 );

@@ -707,6 +707,7 @@ impl Render for WorkspaceView {
             Quit => |this, cx| this.vm_do(cx, |vm, cx| vm.request_quit(cx)),
             IncreaseCodeSize => |this, cx| this.vm_do(cx, |vm, cx| vm.change_code_size(1, cx)),
             DecreaseCodeSize => |this, cx| this.vm_do(cx, |vm, cx| vm.change_code_size(-1, cx)),
+            ResetCodeSize => |this, cx| this.vm_do(cx, |vm, cx| vm.reset_code_size(cx)),
             ZoomIn => |this, cx| this.doc_do(cx, |d, cx| d.zoom_by(1.25, cx)),
             ZoomOut => |this, cx| this.doc_do(cx, |d, cx| d.zoom_by(1.0 / 1.25, cx)),
             ZoomReset => |this, cx| this.doc_do(cx, |d, cx| d.zoom_reset(cx)),
