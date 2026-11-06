@@ -43,8 +43,10 @@ impl Focusable for WorkspaceView {
 impl WorkspaceView {
     pub fn new(vm: Entity<WorkspaceViewModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let subs = vec![
-            cx.observe_in(&vm, window, |this, _, _, cx| {
+            cx.observe_in(&vm, window, |this, _, window, cx| {
                 this.forget_closed_documents(cx);
+                // aussi hors du rendu : une fenêtre cachée ne se redessine pas, sa barre de titre reste à jour
+                this.sync_title(window, cx);
                 cx.notify();
             }),
             cx.subscribe_in(&vm, window, |this, _, ev: &WorkspaceEvent, window, cx| this.on_workspace_event(ev, window, cx)),
@@ -84,6 +86,14 @@ impl WorkspaceView {
     #[cfg(test)]
     pub fn view_model(&self) -> Entity<WorkspaceViewModel> {
         self.vm.clone()
+    }
+
+    fn sync_title(&mut self, window: &mut Window, cx: &App) {
+        let title = self.vm.read(cx).window_title(cx);
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
     }
 
     /// Vue d'édition associée à un ViewModel (créée à la demande).
@@ -631,11 +641,7 @@ impl Render for WorkspaceView {
                 ws.preferences_open,
             )
         };
-        let title = self.vm.read(cx).window_title(cx);
-        if title != self.title {
-            window.set_window_title(&title);
-            self.title = title;
-        }
+        self.sync_title(window, cx);
         let editor_vm = doc.read(cx).editor.clone();
         let editor = self.editor_view(&editor_vm, window, cx);
         let preview = self.preview_view(&doc, window, cx);
