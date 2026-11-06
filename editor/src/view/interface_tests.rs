@@ -9,7 +9,7 @@ use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use super::theme;
 use super::workspace_view::WorkspaceView;
 use crate::keymap;
-use crate::model::preferences::{InterfaceChoice, LinkClick, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
+use crate::model::preferences::{InterfaceChoice, Preferences, PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::services::preferences_service;
 use crate::viewmodel::workspace_vm::{PathPurpose, WorkspaceViewModel};
 
@@ -318,9 +318,9 @@ fn crossing_arrows(s: &mut Session) -> (Entity<crate::viewmodel::document_vm::Do
         let mut output = (*r.output).clone();
         output.regions.clear();
         output.links = vec![
-            Link { line: 2, after: 0, points: vec![(0.0, 0.0), (200.0, 200.0)] },
-            Link { line: 3, after: 0, points: vec![(200.0, 0.0), (0.0, 200.0)] },
-            Link { line: 4, after: 0, points: vec![(0.0, 300.0), (200.0, 300.0)] },
+            Link { line: 2, after: 0, points: vec![(0.0, 0.0), (200.0, 200.0)], group: 0 },
+            Link { line: 3, after: 0, points: vec![(200.0, 0.0), (0.0, 200.0)], group: 1 },
+            Link { line: 4, after: 0, points: vec![(0.0, 300.0), (200.0, 300.0)], group: 2 },
         ];
         r.output = std::sync::Arc::new(output);
         let (ox, oy) = d.scene_origin();
@@ -369,30 +369,6 @@ fn overlapping_arrows_ask_which_one_was_meant(cx: &mut TestAppContext) {
     s.click("link-choice-3");
     assert_eq!(cursor_line(&s), 3);
     assert!(doc.read_with(s.window, |d, _| d.link_menu.is_none()));
-}
-
-#[gpui::test]
-fn the_click_mode_of_arrows_is_a_preference(cx: &mut TestAppContext) {
-    if crate::services::render_service::RenderService::locate().is_none() {
-        eprintln!("pumlrender absent : test ignoré");
-        return;
-    }
-    let path = temp_file("modes.puml", "@startuml\nA --> B\nC --> D\nE --> F\n@enduml\n");
-    let mut s = open(cx, vec![path]);
-    let (doc, crossing, _) = crossing_arrows(&mut s);
-    assert_eq!(s.preferences().link_click, LinkClick::Along, "toute la longueur par défaut");
-    // le milieu d'une flèche réagit en mode « toute la longueur »…
-    doc.update(s.window, |d, cx| d.hover(crossing.0, crossing.1, cx));
-    assert_eq!(doc.read_with(s.window, |d, _| d.hovered_links.len()), 2);
-    // …mais plus en mode « les bouts », qui ne garde que le départ et la pointe
-    s.click("tb-preferences");
-    s.click("pref-link-ends");
-    assert_eq!(preferences_service::load().0.link_click, LinkClick::Ends, "enregistré");
-    doc.update(s.window, |d, cx| d.hover(crossing.0, crossing.1, cx));
-    assert!(doc.read_with(s.window, |d, _| d.hovered_links.is_empty()));
-    let start = doc.read_with(s.window, |d, _| d.scene_origin());
-    doc.update(s.window, |d, cx| d.hover(start.0 + 5.0, start.1 + 5.0, cx));
-    assert_eq!(doc.read_with(s.window, |d, _| d.hovered_links.clone()), vec![0], "le départ réagit");
 }
 
 #[gpui::test]

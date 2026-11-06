@@ -81,26 +81,6 @@ impl PreviewEngine {
     }
 }
 
-/// Où une flèche réagit au clic. Choix temporaire, le temps de comparer les deux.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinkClick {
-    /// Sur toute sa longueur.
-    Along,
-    /// Seulement au départ et à la pointe.
-    Ends,
-}
-
-impl LinkClick {
-    const ALL: [LinkClick; 2] = [LinkClick::Along, LinkClick::Ends];
-
-    fn key(self) -> &'static str {
-        match self {
-            LinkClick::Along => "along",
-            LinkClick::Ends => "ends",
-        }
-    }
-}
-
 /// Ce qu'un diagramme a le droit de faire ; appliqué avant le rendu (`model/preflight.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecurityProfile {
@@ -148,7 +128,6 @@ pub struct Preferences {
     pub interface: InterfaceChoice,
     pub preview_engine: PreviewEngine,
     pub security_profile: SecurityProfile,
-    pub link_click: LinkClick,
     pub theme: ThemeChoice,
     /// En thème sombre, adapter les couleurs du diagramme (sinon feuille claire).
     pub adapt_diagram: bool,
@@ -164,7 +143,6 @@ impl Default for Preferences {
             interface: InterfaceChoice::Editor,
             preview_engine: PreviewEngine::Native,
             security_profile: SecurityProfile::Macros,
-            link_click: LinkClick::Along,
             theme: ThemeChoice::System, adapt_diagram: false, autocomplete: true,
             code_size: 14,
         }
@@ -197,7 +175,8 @@ impl Preferences {
             let ok = match k {
                 "interface" => InterfaceChoice::ALL.iter().find(|c| c.key() == v).map(|c| p.interface = *c).is_some(),
                 "preview_engine" => PreviewEngine::ALL.iter().find(|c| c.key() == v).map(|c| p.preview_engine = *c).is_some(),
-                "link_click" => LinkClick::ALL.iter().find(|c| c.key() == v).map(|c| p.link_click = *c).is_some(),
+                // réglage d'un prototype retiré : ni message ni erreur s'il traîne dans le fichier
+                "link_click" => true,
                 "security_profile" => SecurityProfile::ALL.iter().find(|c| c.key() == v).map(|c| p.security_profile = *c).is_some(),
                 "theme" => ThemeChoice::ALL.iter().find(|t| t.key() == v).map(|t| p.theme = *t).is_some(),
                 "adapt_diagram" => parse_bool(v).map(|b| p.adapt_diagram = b).is_some(),
@@ -227,8 +206,6 @@ impl Preferences {
              # none : pas de préprocesseur ; macros : !define et variables ;\n\
              # folder : en plus, !include limité au dossier du document\n\
              security_profile = {}\n\
-             # clic sur une flèche : along (toute la longueur) ou ends (les bouts)\n\
-             link_click = {}\n\
              # theme : system, light ou dark\n\
              theme = {}\n\
              # en thème sombre, adapter les couleurs du diagramme (sinon feuille claire)\n\
@@ -240,7 +217,6 @@ impl Preferences {
             self.interface.key(),
             self.preview_engine.key(),
             self.security_profile.key(),
-            self.link_click.key(),
             self.theme.key(),
             self.adapt_diagram,
             self.autocomplete,
@@ -255,7 +231,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_defaults() {
-        let p = Preferences { interface: InterfaceChoice::Classic, preview_engine: PreviewEngine::Official, security_profile: SecurityProfile::Folder, link_click: LinkClick::Ends, theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
+        let p = Preferences { interface: InterfaceChoice::Classic, preview_engine: PreviewEngine::Official, security_profile: SecurityProfile::Folder, theme: ThemeChoice::Dark, adapt_diagram: true, autocomplete: false, code_size: 18 };
         assert_eq!(Preferences::parse(&p.to_text()), (p, vec![]));
         assert_eq!(Preferences::parse("").0, Preferences::default());
     }
@@ -280,6 +256,14 @@ mod tests {
         assert_eq!(p.security_profile, SecurityProfile::Folder);
         assert_eq!(p.theme, ThemeChoice::Dark);
         assert_eq!(p.code_size, 18);
+    }
+
+    #[test]
+    fn a_retired_setting_is_silently_dropped() {
+        let (p, ignored) = Preferences::parse("link_click = ends\ntheme = dark\n");
+        assert_eq!(ignored, Vec::<String>::new());
+        assert_eq!(p.theme, ThemeChoice::Dark);
+        assert!(!p.to_text().contains("link_click"));
     }
 
     #[test]

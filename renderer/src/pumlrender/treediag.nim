@@ -115,9 +115,11 @@ proc drawH(svg: var Svg, n: TNode, root: bool, ctx: Context) =
     let x1 = if toRight: c.x else: c.x + c.w
     let y1 = c.y + c.h / (if c.boxless: 1.0 else: 2.0)
     let mx = (x0 + x1) / 2
+    svg.beginLink(ctx, c.line)
     svg.path("M" & fmtF(x0) & " " & fmtF(y0) & " C" & fmtF(mx) & " " & fmtF(y0) & " " & fmtF(mx) & " " &
       fmtF(y1) & " " & fmtF(x1) & " " & fmtF(y1), "none", Stroke, 1.2)
     ctx.linkCubic(c.line, (x0, y0), (mx, y0), (mx, y1), (x1, y1))
+    svg.endLink(c.line)
     drawH(svg, c, false, ctx)
   drawNode(svg, n, root, ctx)
 
@@ -153,8 +155,10 @@ proc drawV(svg: var Svg, n: TNode, root: bool, ctx: Context) =
       let cx = c.x + c.w / 2
       lo = min(lo, cx)
       hi = max(hi, cx)
+      svg.beginLink(ctx, c.line)
       svg.line(cx, midY, cx, c.y)
       ctx.link(c.line, [(cx, midY), (cx, c.y)])
+      svg.endLink(c.line)
     svg.line(lo, midY, hi, midY)
   for c in n.children: drawV(svg, c, false, ctx)
   drawNode(svg, n, root, ctx)

@@ -428,6 +428,26 @@ enum E {
     check renderPuml("@startmindmap\n* r\n** a\n** b\n@endmindmap\n").links.len == 2
     check renderPuml("@startwbs\n* r\n** a\n@endwbs\n").links.len == 1
 
+  test "traits et pointe d'une flèche sont regroupés, un groupe par tracé":
+    for src in ["@startuml\nclass A\nclass B\nA ..|> B\nA --> A\nB <--> A : x\n@enduml\n",
+                "@startuml\nA -> B : m\nA --> A : soi\nB ->> A\n@enduml\n",
+                "@startuml\nstart\n:a;\n:b;\nstop\n@enduml\n",
+                "@startuml\nrobust a\nrobust b\n@0\na is X\nb is Y\na -> b : m\n@enduml\n",
+                "@startjson\n{\"a\": {\"b\": 1}}\n@endjson\n",
+                "@startmindmap\n* r\n** a\n@endmindmap\n", "@startwbs\n* r\n** a\n@endwbs\n"]:
+      let r = renderPuml(src)
+      check validSvg(r.svg)
+      check r.links.len > 0
+      check r.svg.count("data-link=") == r.links.len
+      for i in 0 ..< r.links.len: check ("data-link=\"" & $i & "\"") in r.svg
+
+  test "le groupe d'une flèche pointillée à pointe creuse garde les deux":
+    let r = renderPuml("@startuml\nclass A\nclass B\nA ..|> B\n@enduml\n")
+    let start = r.svg.find("data-link=\"0\"")
+    let group = r.svg[start ..< r.svg.find("</g>", start)]
+    check "stroke-dasharray" in group
+    check "<polygon" in group and "fill=\"#FFFFFF\"" in group
+
   test "les éléments dessinés après la flèche passent au-dessus":
     let r = renderPuml("@startuml\nclass A\nclass B\nA --> B\n@enduml\n")
     check r.links[0].after < r.regions.len

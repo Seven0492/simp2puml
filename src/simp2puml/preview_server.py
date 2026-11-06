@@ -6,6 +6,7 @@ par l'éditeur : ce processus n'a aucun fichier à lire. `--install` installe le
 """
 from __future__ import annotations
 
+import itertools
 import re
 import sys
 from typing import BinaryIO
@@ -149,6 +150,7 @@ def regions_and_links(svg: bytes, first_line: int, text: str = "") -> tuple[list
     found: list = []
     links: list = []
     finder = _SourceFinder(text)
+    groups = itertools.count()
 
     def visit(element: ET.Element, owner: int | None, box: tuple[float, float, float, float] | None) -> None:
         for child in element:
@@ -165,12 +167,13 @@ def regions_and_links(svg: bytes, first_line: int, text: str = "") -> tuple[list
                     if own_box is not None:
                         found.append((source + 1, *own_box))
                     if is_link:
+                        group = next(groups)  # rang du groupe : l'éditeur recolore ses formes au survol
                         # le premier tracé est le trait ; les suivants, les pointes
                         path = next(child.iter(f"{_SVG}path"), None)
                         if path is not None:
                             points = _flatten(path.get("d") or "")
                             if len(points) >= 2:
-                                links.append((source + 1, len(found), points))
+                                links.append((source + 1, len(found), points, group))
                     visit(child, source, own_box)
                 else:
                     visit(child, owner, box)
@@ -215,9 +218,9 @@ def reply(rid: str, rendering: render.Rendering, block: int, text: str) -> bytes
     found, links = regions_and_links(svg, first_line, text)
     for line, x, y, w, h in found:
         head.append(f"REGION\t{line}\t{x:g}\t{y:g}\t{w:g}\t{h:g}")
-    for line, after, points in links:
+    for line, after, points, group in links:
         path = " ".join(f"{x:g} {y:g}" for x, y in points)
-        head.append(f"LINK\t{line}\t{after}\t{path}")
+        head.append(f"LINK\t{line}\t{after}\t{path}\t{group}")
     head.append(f"SVG\t{len(svg)}")
     return ("\n".join(head) + "\n").encode() + svg
 

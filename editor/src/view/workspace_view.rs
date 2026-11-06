@@ -15,7 +15,7 @@ use super::components::{button, choice, field, hint, separator, tooltip};
 use super::editor_view::EditorView;
 use super::preview_view::PreviewView;
 use super::theme;
-use crate::model::preferences::{LinkClick, PreviewEngine, SecurityProfile, ThemeChoice};
+use crate::model::preferences::{PreviewEngine, SecurityProfile, ThemeChoice};
 use crate::model::templates::TEMPLATES;
 use crate::viewmodel::document_vm::{DocumentEvent, DocumentViewModel};
 use crate::viewmodel::editor_vm::EditorViewModel;
@@ -386,16 +386,6 @@ impl WorkspaceView {
                         .on_click(self.with_vm(|vm, cx| vm.install_official_engine(cx), cx)),
                 )
             })
-            .child(separator())
-            .child(label("Clic sur les flèches :"))
-            .child(
-                choice("pref-link-along", "Toute la longueur", p.link_click == LinkClick::Along)
-                    .on_click(self.with_vm(|vm, cx| vm.set_link_click(LinkClick::Along, cx), cx)),
-            )
-            .child(
-                choice("pref-link-ends", "Les bouts", p.link_click == LinkClick::Ends)
-                    .on_click(self.with_vm(|vm, cx| vm.set_link_click(LinkClick::Ends, cx), cx)),
-            )
             .child(separator())
             .child(label("Sécurité :"))
             .children(SecurityProfile::ALL.iter().map(|&profile| {

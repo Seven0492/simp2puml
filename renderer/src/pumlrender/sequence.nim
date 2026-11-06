@@ -631,10 +631,12 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         let y0 = ty + lh + 4
         let y1 = y0 + 16
         let tw = blockWidth(lines, 12)
+        fg.beginLink(ctx, ev.line)
         fg.path("M" & fmtF(x0) & " " & fmtF(y0) & " H" & fmtF(x0 + 36) & " V" & fmtF(y1) & " H" & fmtF(x0 + 2),
           "none", color, 1.2, dash)
         fg.drawHead(x0 + 2, y1, PI, ev.head, color)
         ctx.link(ev.line, [(x0, y0), (x0 + 36, y0), (x0 + 36, y1), (x0 + 2, y1)])
+        fg.endLink(ev.line)
         if tw > 0: ctx.region(ev.line, x0, ty, tw + 10, lh + 4)
         extent(x0, x0 + 8 + max(tw, 36))
         y = y1 + 14
@@ -650,12 +652,14 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
         let ly = y + lh + 4
         let tx = (x0 + x1) / 2
         fg.textBlock(min(x0, x1) + 8, y, lines, size = 12)
+        fg.beginLink(ctx, ev.line)
         fg.line(x0, ly, x1, ly, color, 1.2, dash)
         fg.drawHead(x1, ly, (if dir > 0: 0.0 else: PI), ev.head, color)
         if ev.tail.len > 0:
           fg.drawHead(x0, ly, (if dir > 0: PI else: 0.0), ev.tail, color)
         discard tx
         ctx.link(ev.line, [(x0, ly), (x1, ly)])
+        fg.endLink(ev.line)
         # le libellé seul : la flèche se clique sur son tracé
         let labelW = blockWidth(lines, 12)
         if labelW > 0: ctx.region(ev.line, min(x0, x1) + 6, y, labelW + 4, lh + 2)

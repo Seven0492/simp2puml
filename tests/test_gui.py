@@ -468,7 +468,7 @@ def test_official_regions_reach_members_and_elements_without_line_numbers():
     assert {2, 3, 4, 6} <= lines
     member = next(r for r in found if r[0] == 3)
     assert member[1:] == (10.0, 30.0, 80.0, 13.0), 'toute la largeur de l\'élément'
-    assert [(line, points) for line, _, points in links] == [(2, [(10.0, 70.0), (10.0, 90.0)])], 'la flèche : son tracé'
+    assert [(line, points, group) for line, _, points, group in links] == [(2, [(10.0, 70.0), (10.0, 90.0)], 0)], 'la flèche : son tracé et son groupe'
     # Sans aucune ligne notée (activité, Gantt…) : les textes dans l'ordre du source, même répétés.
     plain = ('<svg xmlns="http://www.w3.org/2000/svg"><text x="1" y="9" font-size="9" textLength="9">rien</text>'
              '<text x="1" y="9" font-size="9">Lire</text><text x="1" y="9" font-size="9">Fin</text></svg>').encode()

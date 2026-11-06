@@ -446,10 +446,12 @@ proc drawSeq(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
     if i < n.children.high:
       let extra = if n.labels[i].len > 0: 6.0 else: 0.0
       if not c.terminal:
-        svg.arrowDown(ax, yy, yy + Gap + extra)
         # la flèche renvoie à son étiquette, sinon à ce vers quoi elle pointe
         let target = if n.labelLines[i] > 0: n.labelLines[i] else: n.children[i + 1].line
+        svg.beginLink(ctx, target)
+        svg.arrowDown(ax, yy, yy + Gap + extra)
         ctx.link(target, [(ax, yy), (ax, yy + Gap + extra)])
+        svg.endLink(target)
         if n.labels[i].len > 0:
           svg.text(ax + 6, yy + Gap / 2 + 6, n.labels[i], size = 12, fill = Muted)
           ctx.region(n.labelLines[i], ax + 4, yy + Gap / 2 - 6, textWidth(n.labels[i], 12) + 4, 16)

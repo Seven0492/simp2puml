@@ -81,10 +81,12 @@ proc draw(svg: var Svg, b: DBox, ctx: Context, maxX, maxY: var float) =
       let ex = c.x
       let ey = c.y + RowH / 2
       let mx = (sx + ex) / 2
+      svg.beginLink(ctx, c.line)
       svg.circle(sx - 8, sy, 3, Stroke, Stroke)
       svg.path("M" & fmtF(sx - 8) & " " & fmtF(sy) & " C" & fmtF(mx) & " " & fmtF(sy) & " " & fmtF(mx) & " " &
         fmtF(ey) & " " & fmtF(ex) & " " & fmtF(ey))
       ctx.linkCubic(c.line, (sx - 8, sy), (mx, sy), (mx, ey), (ex, ey))
+      svg.endLink(c.line)
       draw(svg, c, ctx, maxX, maxY)
   if b.keyW > 0: svg.line(b.x + b.keyW, b.y, b.x + b.keyW, b.y + b.h, Muted, 1)
   svg.rect(b.x, b.y, b.w, b.h, "none", Stroke, 4)

@@ -11,6 +11,9 @@
 //! absolus ou relatifs), `text`, et `g` avec `translate(...)`. Les couleurs viennent
 //! des attributs ou de `style="…"` ; un dégradé est réduit à sa première couleur.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use roxmltree::{Document, Node, ParsingOptions};
 
 /// Couleur RGBA (0xRRGGBBAA).
@@ -103,6 +106,9 @@ pub struct Scene {
     pub width: f32,
     pub height: f32,
     pub items: Vec<Item>,
+    /// Formes de chaque flèche (trait et pointes), par numéro de groupe : le survol
+    /// les recolore à leur place, en gardant pointillés, courbes et formes de pointe.
+    pub link_items: HashMap<usize, Range<usize>>,
 }
 
 impl Scene {
@@ -124,7 +130,8 @@ impl Scene {
             let style = Style { fill: Some(color), stroke: None, stroke_width: 0.0, dash: Vec::new() };
             scene.items.push(Item::Shape { geometry, style, bounds });
         }
-        walk(&root, 0.0, 0.0, &mut scene.items);
+        let mut links = LinkGroups { items: &mut scene.link_items, next: 0 };
+        walk(&root, 0.0, 0.0, &mut scene.items, &mut links);
         Ok(scene)
     }
 }
@@ -204,7 +211,13 @@ fn style(node: &Node) -> Style {
     Style { fill, stroke, stroke_width: prop_num(node, "stroke-width").unwrap_or(1.0), dash }
 }
 
-fn walk(node: &Node, ox: f32, oy: f32, out: &mut Vec<Item>) {
+struct LinkGroups<'a> {
+    items: &'a mut HashMap<usize, Range<usize>>,
+    /// Rang du prochain `<g class="link">` (sortie de PlantUML).
+    next: usize,
+}
+
+fn walk(node: &Node, ox: f32, oy: f32, out: &mut Vec<Item>, links: &mut LinkGroups) {
     for child in node.children().filter(|n| n.is_element()) {
         let tag = child.tag_name().name();
         let push = |geometry: Geometry, out: &mut Vec<Item>| {
@@ -218,7 +231,18 @@ fn walk(node: &Node, ox: f32, oy: f32, out: &mut Vec<Item>) {
         match tag {
             "g" => {
                 let (dx, dy) = translate(&child);
-                walk(&child, ox + dx, oy + dy, out);
+                // `data-link` : pumlrender ; `class="link"` : PlantUML, numérotés dans l'ordre
+                let group = child.attribute("data-link").and_then(|v| v.parse().ok()).or_else(|| {
+                    (child.attribute("class") == Some("link")).then(|| {
+                        links.next += 1;
+                        links.next - 1
+                    })
+                });
+                let start = out.len();
+                walk(&child, ox + dx, oy + dy, out, links);
+                if let Some(group) = group {
+                    links.items.insert(group, start..out.len());
+                }
             }
             "rect" => push(
                 Geometry::Rect {
@@ -545,6 +569,17 @@ const NAMED_COLORS: &[(&str, u32)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shapes_of_each_arrow_are_found() {
+        let native = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><rect width="9" height="9" fill="#fff"/><g transform="translate(1 1)"><g data-link="1"><path d="M0 0 L5 5" fill="none" stroke="#000" stroke-dasharray="6 4"/><polygon points="1,1 2,2 3,1" fill="#fff" stroke="#000"/></g><text x="1" y="1">a</text></g></svg>"##;
+        let scene = Scene::parse(native).unwrap();
+        assert_eq!(scene.link_items.get(&1), Some(&(1..3)));
+        let official = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><g class="entity"><rect width="1" height="1" fill="#fff"/></g><g class="link"><path d="M0,0 L5,5" fill="none" style="stroke:#000;"/></g><g class="link"><path d="M1,1 L5,5" fill="none" style="stroke:#000;"/><polygon points="1,1 2,2 3,1" fill="#000"/></g></svg>"##;
+        let scene = Scene::parse(official).unwrap();
+        assert_eq!(scene.link_items.get(&0), Some(&(1..2)));
+        assert_eq!(scene.link_items.get(&1), Some(&(2..4)));
+    }
 
     /// Extrait de ce que produit PlantUML : couleurs dans `style`, dégradé, fond de page.
     #[test]

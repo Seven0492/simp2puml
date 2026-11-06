@@ -15,6 +15,8 @@ use gpui::{
     fill, font, point, prelude::*, px, quad, relative, size,
 };
 
+use std::ops::Range;
+
 use super::components::{button, hint};
 use super::theme;
 use crate::model::svg_scene::{Anchor, Color, Geometry, Item, PathCmd, Scene, Style as Paint, Text};
@@ -278,15 +280,20 @@ impl Element for SceneElement {
             let sheet = Bounds::new(t.point(0.0, 0.0), size(t.len(scene.width), t.len(scene.height)));
             window.paint_quad(fill(Bounds::new(sheet.origin + point(px(0.), px(2.)), sheet.size), theme::sheet_shadow()));
             window.paint_quad(fill(sheet, theme::sheet()));
-            paint_scene(&scene, &visible, t, window, cx);
+            // formes des flèches survolées ; une flèche sans formes connues garde un simple trait
+            let groups: Vec<&Range<usize>> = hovered_links
+                .iter()
+                .filter_map(|i| output.links.get(*i))
+                .filter_map(|l| scene.link_items.get(&l.group))
+                .collect();
+            paint_scene(&scene, &visible, &groups, t, window, cx);
             if let Some(r) = p.hovered_region.and_then(|i| output.regions.get(i)) {
                 let b = Bounds::new(t.point(r.x - 2.0, r.y - 2.0), size(t.len(r.w + 4.0), t.len(r.h + 4.0)));
                 window.paint_quad(
                     quad(b, Corners::all(px(3.)), theme::region_hover(), Edges::all(px(1.)), theme::accent(), Default::default()),
                 );
             }
-            // la flèche entière est surlignée, même si seul un bout réagit au clic
-            for link in hovered_links.iter().filter_map(|i| output.links.get(*i)) {
+            for link in hovered_links.iter().filter_map(|i| output.links.get(*i)).filter(|l| !scene.link_items.contains_key(&l.group)) {
                 let mut builder = PathBuilder::stroke(px(3.0));
                 for (k, (x, y)) in link.points.iter().enumerate() {
                     if k == 0 { builder.move_to(t.point(*x, *y)) } else { builder.line_to(t.point(*x, *y)) }
@@ -300,10 +307,28 @@ impl Element for SceneElement {
     }
 }
 
-fn paint_scene(scene: &Scene, visible: &crate::model::svg_scene::Bounds, t: Transform, window: &mut Window, cx: &mut App) {
-    for item in &scene.items {
+/// Colorie une forme de flèche survolée, à sa place dans le dessin : les pointillés et la
+/// courbe restent, et ce qui passe au-dessus (boîtes, libellés) reste au-dessus. Une pointe
+/// pleine (remplie de sa propre couleur de trait) devient pleine d'accent ; une pointe
+/// creuse garde son fond, qui continue de masquer le trait qui arrive.
+fn highlight_colors(style: &Paint, accent: Hsla) -> (Option<Hsla>, Option<Hsla>) {
+    let solid = style.fill.is_some() && style.fill == style.stroke;
+    let fill = if solid { Some(accent) } else { style.fill.map(hsla) };
+    (fill, style.stroke.map(|_| accent))
+}
+
+/// Le trait survolé s'épaissit un peu : le bleu seul se lirait mal sur un trait fin.
+const HIGHLIGHT_EXTRA_WIDTH: f32 = 0.8;
+
+fn paint_scene(scene: &Scene, visible: &crate::model::svg_scene::Bounds, highlighted: &[&Range<usize>], t: Transform, window: &mut Window, cx: &mut App) {
+    let accent: Hsla = theme::accent().into();
+    for (index, item) in scene.items.iter().enumerate() {
         match item {
             Item::Shape { bounds, .. } | Item::Text { bounds, .. } if !bounds.intersects(visible) => {}
+            Item::Shape { geometry, style, .. } if highlighted.iter().any(|r| r.contains(&index)) => {
+                let (fill, stroke) = highlight_colors(style, accent);
+                paint_colored(geometry, style.stroke_width + HIGHLIGHT_EXTRA_WIDTH, &style.dash, fill, stroke, t, window);
+            }
             Item::Shape { geometry, style, .. } => paint_shape(geometry, style, t, window),
             Item::Text { text, .. } => paint_text(text, t, window, cx),
         }
@@ -311,42 +336,46 @@ fn paint_scene(scene: &Scene, visible: &crate::model::svg_scene::Bounds, t: Tran
 }
 
 fn paint_shape(geometry: &Geometry, style: &Paint, t: Transform, window: &mut Window) {
-    let stroke_w = style.stroke_width * t.zoom;
+    paint_colored(geometry, style.stroke_width, &style.dash, style.fill.map(hsla), style.stroke.map(hsla), t, window);
+}
+
+fn paint_colored(geometry: &Geometry, stroke_width: f32, dash: &[f32], fill_color: Option<Hsla>, stroke: Option<Hsla>, t: Transform, window: &mut Window) {
+    let stroke_w = stroke_width * t.zoom;
     // chemin rapide : quads (rectangles et cercles sans pointillés)
     let as_quad = match *geometry {
-        Geometry::Rect { x, y, w, h, radius } if style.dash.is_empty() => Some((x, y, w, h, radius)),
-        Geometry::Ellipse { cx: ex, cy: ey, rx, ry } if rx == ry && style.dash.is_empty() => Some((ex - rx, ey - ry, 2.0 * rx, 2.0 * ry, rx)),
+        Geometry::Rect { x, y, w, h, radius } if dash.is_empty() => Some((x, y, w, h, radius)),
+        Geometry::Ellipse { cx: ex, cy: ey, rx, ry } if rx == ry && dash.is_empty() => Some((ex - rx, ey - ry, 2.0 * rx, 2.0 * ry, rx)),
         _ => None,
     };
     if let Some((x, y, w, h, radius)) = as_quad {
         // le trait SVG est centré sur le contour ; celui d'un quad est intérieur
-        let half = if style.stroke.is_some() { style.stroke_width / 2.0 } else { 0.0 };
+        let half = if stroke.is_some() { stroke_width / 2.0 } else { 0.0 };
         let b = Bounds::new(t.point(x - half, y - half), size(t.len(w + 2.0 * half), t.len(h + 2.0 * half)));
-        let bg: Hsla = style.fill.map(hsla).unwrap_or(gpui::transparent_black());
-        let (border_w, border_c) = match style.stroke {
-            Some(c) => (px(stroke_w), hsla(c)),
+        let bg: Hsla = fill_color.unwrap_or(gpui::transparent_black());
+        let (border_w, border_c) = match stroke {
+            Some(c) => (px(stroke_w), c),
             None => (px(0.), gpui::transparent_black()),
         };
         window.paint_quad(quad(b, Corners::all(t.len(radius + half)), bg, Edges::all(border_w), border_c, Default::default()));
         return;
     }
     let cmds = geometry_commands(geometry);
-    if let Some(c) = style.fill {
+    if let Some(c) = fill_color {
         let mut builder = PathBuilder::fill();
         append_commands(&mut builder, &cmds, t);
         if let Ok(path) = builder.build() {
-            window.paint_path(path, hsla(c));
+            window.paint_path(path, c);
         }
     }
-    if let Some(c) = style.stroke {
+    if let Some(c) = stroke {
         let mut builder = PathBuilder::stroke(px(stroke_w.max(0.5)));
-        if !style.dash.is_empty() {
-            let dash: Vec<Pixels> = style.dash.iter().map(|d| t.len(*d)).collect();
+        if !dash.is_empty() {
+            let dash: Vec<Pixels> = dash.iter().map(|d| t.len(*d)).collect();
             builder = builder.dash_array(&dash);
         }
         append_commands(&mut builder, &cmds, t);
         if let Ok(path) = builder.build() {
-            window.paint_path(path, hsla(c));
+            window.paint_path(path, c);
         }
     }
 }
@@ -437,4 +466,26 @@ fn paint_text(text: &Text, t: Transform, window: &mut Window, cx: &mut App) {
     let line_height = shaped.ascent + shaped.descent;
     let top = t.point(text.x, text.y).y - shaped.ascent;
     let _ = shaped.paint(point(x, top), line_height, window, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn style(fill: Option<u32>, stroke: Option<u32>) -> Paint {
+        Paint { fill: fill.map(Color), stroke: stroke.map(Color), stroke_width: 1.2, dash: vec![6.0, 4.0] }
+    }
+
+    #[test]
+    fn a_hollow_head_stays_hollow_and_a_solid_one_turns_accent() {
+        let accent: Hsla = gpui::rgb(0x3a6ea5).into();
+        let line = highlight_colors(&style(None, Some(0x3b4252ff)), accent);
+        assert_eq!(line, (None, Some(accent)), "le trait seul");
+        let hollow = highlight_colors(&style(Some(0xffffffff), Some(0x3b4252ff)), accent);
+        assert_eq!(hollow.1, Some(accent), "le contour change");
+        assert_ne!(hollow.0, Some(accent), "le fond reste : il masque le trait qui arrive");
+        assert!(hollow.0.is_some());
+        let solid = highlight_colors(&style(Some(0x3b4252ff), Some(0x3b4252ff)), accent);
+        assert_eq!(solid, (Some(accent), Some(accent)));
+    }
 }

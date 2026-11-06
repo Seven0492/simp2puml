@@ -143,6 +143,14 @@ proc link*(ctx: Context, line: int, points: openArray[(float, float)]) =
   if line > 0 and points.len >= 2:
     ctx.links.add LinkPath(line: line, after: ctx.regions.len, points: @points)
 
+proc beginLink*(svg: var Svg, ctx: Context, line: int) =
+  ## Regroupe les traits et la pointe d'une flèche : l'éditeur les recolore ensemble au survol.
+  ## Le numéro est celui du `ctx.link` qui suit, un seul par groupe.
+  if line > 0: svg.body.add "<g data-link=\"" & $ctx.links.len & "\">\n"
+
+proc endLink*(svg: var Svg, line: int) =
+  if line > 0: svg.body.add "</g>\n"
+
 proc linkCubic*(ctx: Context, line: int, p0, c1, c2, p3: (float, float)) =
   ## Courbe de Bézier approchée par des segments.
   const Steps = 12
@@ -503,13 +511,13 @@ proc arrowHead*(svg: var Svg, x, y, angle: float, style: string, color = Stroke)
   of "filled":
     svg.polygon([pt(0, 0), pt(-11, -5), pt(-8, 0), pt(-11, 5)], color, color)
   of "triangle":
-    svg.polygon([pt(0, 0), pt(-14, -8), pt(-14, 8)], "#FFFFFF", color)
+    svg.polygon([pt(0, 0), pt(-14, -8), pt(-14, 8)], Background, color)
   of "diamond", "fdiamond":
     svg.polygon([pt(0, 0), pt(-8, -5.5), pt(-16, 0), pt(-8, 5.5)],
-      (if style == "fdiamond": color else: "#FFFFFF"), color)
+      (if style == "fdiamond": color else: Background), color)
   of "circle":
     let c = pt(-5, 0)
-    svg.circle(c[0], c[1], 5, "#FFFFFF", color)
+    svg.circle(c[0], c[1], 5, Background, color)
   of "cross":
     let a = pt(-10, -5)
     let b = pt(0, 5)
@@ -522,7 +530,7 @@ proc arrowHead*(svg: var Svg, x, y, angle: float, style: string, color = Stroke)
     svg.path("M" & fmtF(a[0]) & " " & fmtF(a[1]) & " L" & fmtF(x) & " " & fmtF(y), "none", color)
   of "plus":
     let c = pt(-6, 0)
-    svg.circle(c[0], c[1], 6, "#FFFFFF", color)
+    svg.circle(c[0], c[1], 6, Background, color)
     let a = pt(-12, 0)
     let b = pt(-6, -6)
     let d = pt(-6, 6)

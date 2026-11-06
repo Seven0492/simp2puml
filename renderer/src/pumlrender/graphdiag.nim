@@ -1289,13 +1289,15 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     let x0 = bx + bw
     let y0 = by + bh * 0.3
     let y1 = by + bh * 0.7
+    svg.beginLink(ctx, r.line)
     svg.path("M" & fmtF(x0) & " " & fmtF(y0) & " C" & fmtF(x0 + 40) & " " & fmtF(y0 - 10) & " " &
       fmtF(x0 + 40) & " " & fmtF(y1 + 10) & " " & fmtF(x0) & " " & fmtF(y1), "none", color, sw, dash)
     if r.rightHead.len > 0: svg.arrowHead(x0, y1, PI + 0.3, r.rightHead, color)
+    ctx.linkCubic(r.line, (x0, y0), (x0 + 40, y0 - 10), (x0 + 40, y1 + 10), (x0, y1))
+    svg.endLink(r.line)
     if r.label.len > 0:
       let lines = r.label.split('\n')
       labels.textBlock(x0 + 34, y0 + (y1 - y0) / 2 - blockHeight(lines.len) / 2, lines, size = 12)
-    ctx.linkCubic(r.line, (x0, y0), (x0 + 40, y0 - 10), (x0 + 40, y1 + 10), (x0, y1))
     if r.label.len > 0:
       let lines = r.label.split('\n')
       ctx.region(r.line, x0 + 34, y0 + (y1 - y0) / 2 - blockHeight(lines.len) / 2, blockWidth(lines, 12), blockHeight(lines.len))
@@ -1328,14 +1330,16 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
   var d = "M" & fmtF(pts[0][0]) & " " & fmtF(pts[0][1])
   for k in 1 .. pts.high:
     d.add " L" & fmtF(pts[k][0]) & " " & fmtF(pts[k][1])
+  svg.beginLink(ctx, r.line)
   svg.path(d, "none", color, sw, dash)
-  ctx.link(r.line, pts)
   if r.leftHead.len > 0:
     let ang = arctan2(pts[0][1] - pts[1][1], pts[0][0] - pts[1][0])
     svg.arrowHead(pts[0][0], pts[0][1], ang, r.leftHead, color)
   if r.rightHead.len > 0:
     let ang = arctan2(pts[^1][1] - pts[^2][1], pts[^1][0] - pts[^2][0])
     svg.arrowHead(pts[^1][0], pts[^1][1], ang, r.rightHead, color)
+  ctx.link(r.line, pts)
+  svg.endLink(r.line)
   # libellé au milieu
   let mid = pts.len div 2
   let (mx, my) = if pts.len mod 2 == 0:

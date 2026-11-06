@@ -386,6 +386,9 @@ mod tests {
             let scene = crate::model::svg_scene::Scene::parse(&out.svg).unwrap_or_else(|e| panic!("{} : {e}", path.display()));
             assert!(scene.items.len() > 3, "{} : {} éléments", path.display(), scene.items.len());
             assert!(scene.width > 0.0 && scene.height > 0.0, "{}", path.display());
+            for link in &out.links {
+                assert!(scene.link_items.get(&link.group).is_some_and(|r| !r.is_empty()), "{} : flèche ligne {}", path.display(), link.line);
+            }
         }
     }
 
@@ -405,6 +408,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{} : {e}", path.display()));
             assert!(scene.items.len() > 3, "{}", path.display());
             assert_eq!((scene.width, scene.height), (out.width, out.height));
+            for link in &out.links {
+                assert!(scene.link_items.get(&link.group).is_some_and(|r| !r.is_empty()), "{} : flèche ligne {}", path.display(), link.line);
+            }
             checked += 1;
         }
         assert!(checked >= 10);

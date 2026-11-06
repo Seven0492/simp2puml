@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task};
 
 use crate::model::diagram::{Hit, RenderOutput, Severity};
-use crate::model::preferences::{LinkClick, SecurityProfile};
+use crate::model::preferences::SecurityProfile;
 use crate::model::preflight::{self, NoFiles};
 use crate::model::svg_scene::Scene;
 use crate::services::include_service::DocumentFolder;
@@ -84,7 +84,6 @@ pub struct DocumentViewModel {
     pub preview: PreviewState,
     /// Ce que le diagramme a le droit de faire (préférences).
     pub security_profile: SecurityProfile,
-    pub link_click: LinkClick,
     /// Flèches sous le pointeur, surlignées sur tout leur tracé.
     pub hovered_links: Vec<usize>,
     pub link_menu: Option<LinkMenu>,
@@ -127,7 +126,6 @@ impl DocumentViewModel {
                 hovered_region: None,
             },
             security_profile: SecurityProfile::Macros,
-            link_click: LinkClick::Along,
             hovered_links: Vec::new(),
             link_menu: None,
             service,
@@ -319,7 +317,7 @@ impl DocumentViewModel {
     fn hit_at(&self, x: f32, y: f32) -> Option<Hit> {
         let r = self.rendering.as_ref()?;
         let (sx, sy) = self.screen_to_scene(x, y);
-        r.output.hit_at(sx, sy, LINK_TOLERANCE / self.preview.zoom, self.link_click)
+        r.output.hit_at(sx, sy, LINK_TOLERANCE / self.preview.zoom)
     }
 
     pub fn screen_to_scene(&self, x: f32, y: f32) -> (f32, f32) {
@@ -414,13 +412,6 @@ impl DocumentViewModel {
     /// Survol d'une entrée du menu : surligne la flèche correspondante.
     pub fn highlight_link(&mut self, link: Option<usize>, cx: &mut Context<Self>) {
         self.hovered_links = link.into_iter().collect();
-        cx.notify();
-    }
-
-    pub fn set_link_click(&mut self, mode: LinkClick, cx: &mut Context<Self>) {
-        self.link_click = mode;
-        self.hovered_links.clear();
-        self.link_menu = None;
         cx.notify();
     }
 }
