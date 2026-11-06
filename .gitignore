@@ -18,6 +18,7 @@ dist/
 # Éditeur GPUI (Rust) et moteur de rendu natif (Nim) : artefacts de construction
 /editor/target/
 /site/dist/
+.cloudflare/
 /renderer/bin/
 /renderer/tests/test_render
 nimcache/
