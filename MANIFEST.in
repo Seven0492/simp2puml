@@ -2,6 +2,9 @@ include README.md LICENSE main.py
 include requirements-dev.txt
 recursive-include tests *.py
 include docs/simp2puml.1
+recursive-include docs *.md
+prune docs/images
+prune site
 recursive-include packaging *
 include tools/build-native.py
 include tools/build-icons.py

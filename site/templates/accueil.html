@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>simp2puml · Écrivez un diagramme, il se dessine</title>
+<meta name="description" content="Un éditeur PlantUML natif à l'aperçu vectoriel, sans Java, et un convertisseur entre SIMP, PlantUML et Atelier Diagrammes.">
+<link rel="canonical" href="https://simp2puml.sethmartin.dev/">
+<meta property="og:title" content="simp2puml">
+<meta property="og:description" content="Écrivez un diagramme, il se dessine. Un éditeur PlantUML natif à l'aperçu vectoriel, sans Java.">
+<meta property="og:image" content="https://simp2puml.sethmartin.dev/images/editeur-clair.png">
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="site.js" defer></script>
+</head>
+<body class="accueil" data-racine="">
+<a class="evitement" href="#contenu">Aller au contenu</a>
+<header class="barre">
+  <a class="marque" href="./"><img src="portrait.png" alt="" width="28" height="28">simp2puml</a>
+  <nav class="barre-liens" aria-label="Liens du site">
+    <a href="guide/installation/">Documentation</a>
+    <a href="https://git.sethmartin.dev/Seth_Martin/simp2puml">Code</a>
+    <button id="theme" type="button" aria-label="Changer de thème" title="Changer de thème"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+  </nav>
+</header>
+<main id="contenu">
+  <section class="tete">
+    <h1>Écrivez un diagramme, il se dessine.</h1>
+    <p>Un éditeur PlantUML natif : l'aperçu suit la frappe, sans Java, et chaque élément du dessin ramène à sa place dans le texte.</p>
+    <p class="actions"><a class="bouton principal" href="guide/installation/">Installer</a> <a class="bouton" href="guide/editeur/">Lire le guide</a></p>
+  </section>
+
+  <figure class="fenetre">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/presentation.png">
+      <img src="images/presentation.gif" alt="L'éditeur en action : on tape une relation et le diagramme se met à jour, on survole une propriété, un Ctrl+clic place le curseur dans le texte, une flèche se colore, puis le thème passe au sombre." width="1200" height="750" fetchpriority="high">
+    </picture>
+    <figcaption>La vraie application, pilotée pas à pas. Le pointeur et les légendes sont ajoutés au montage.</figcaption>
+  </figure>
+
+  <section class="mesures" aria-label="Mesures">
+    <div><strong>17 ms</strong><span>de la frappe à l'aperçu à jour, sur 12 classes</span></div>
+    <div><strong>2 ms</strong><span>par image au survol, même à 500 classes</span></div>
+    <div><strong>0 Java</strong><span>le moteur natif tient dans un binaire</span></div>
+    <p>Mesuré sur un Ryzen 5 7520U, sur batterie, à 60 Hz, avec des diagrammes synthétiques. <a href="guide/moteur/#performances">Détail des mesures</a></p>
+  </section>
+
+  <section class="fonction">
+    <div>
+      <h2>Le diagramme répond au clic</h2>
+      <p>Un clic sur une propriété ramène à sa ligne. Un Ctrl+clic place le curseur au caractère près, ou sélectionne le jeton d'une flèche.</p>
+      <p>Les flèches se cliquent sur toute leur longueur. Là où elles se croisent, un petit menu demande laquelle.</p>
+      <a href="guide/editeur/#cliquer-dans-le-diagramme">Cliquer dans le diagramme</a>
+    </div>
+    <figure class="fenetre"><picture><source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/clics.png"><img src="images/clics.gif" alt="Survol d'une propriété, Ctrl+clic, flèche colorée et menu de chevauchement." width="1200" height="750" loading="lazy"></picture></figure>
+  </section>
+
+  <section class="fonction inverse">
+    <div>
+      <h2>Il aide à écrire</h2>
+      <p>L'autocomplétion connaît les mots-clés selon le contexte et les noms déclarés dans le document. Une erreur est signalée à sa ligne.</p>
+      <a href="guide/editeur/#ecrire">Écrire</a>
+    </div>
+    <figure class="fenetre"><picture><source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/saisie.png"><img src="images/saisie.gif" alt="L'autocomplétion propose un nom du document, puis une erreur apparaît dans les diagnostics." width="1200" height="750" loading="lazy"></picture></figure>
+  </section>
+
+  <section class="fonction">
+    <div>
+      <h2>Net à tous les zooms</h2>
+      <p>L'aperçu est dessiné en vectoriel, sans image bitmap. Dans le texte, <kbd>Ctrl</kbd>+<kbd>+</kbd> agrandit le texte plutôt que le diagramme.</p>
+      <a href="guide/moteur/">Le moteur de rendu</a>
+    </div>
+    <figure class="fenetre"><picture><source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/zoom.png"><img src="images/zoom.gif" alt="Zoom dans le diagramme, puis agrandissement du texte de l'éditeur." width="1200" height="750" loading="lazy"></picture></figure>
+  </section>
+
+  <section class="fonction inverse">
+    <div>
+      <h2>À votre goût</h2>
+      <p>Thème clair ou sombre, diagramme sur feuille claire ou aux couleurs adaptées. Tout s'applique aussitôt.</p>
+      <a href="guide/editeur/#preferences">Préférences</a>
+    </div>
+    <figure class="fenetre"><picture><source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/apparence.png"><img src="images/apparence.gif" alt="Le panneau des préférences, puis le passage au thème sombre." width="1200" height="750" loading="lazy"></picture></figure>
+  </section>
+
+  <section class="galerie">
+    <h2>Toutes ces familles de diagrammes, sans Java</h2>
+    <p>Rendus par le moteur natif. La mise en page diffère de celle de PlantUML, qui reste disponible d'un clic dans les préférences.</p>
+    <ul>
+      <li><img src="images/diagrammes/class.png" alt="" loading="lazy">Classes</li>
+      <li><img src="images/diagrammes/sequence.png" alt="" loading="lazy">Séquence</li>
+      <li><img src="images/diagrammes/activity.png" alt="" loading="lazy">Activité</li>
+      <li><img src="images/diagrammes/state.png" alt="" loading="lazy">États</li>
+      <li><img src="images/diagrammes/usecase.png" alt="" loading="lazy">Cas d'utilisation</li>
+      <li><img src="images/diagrammes/component.png" alt="" loading="lazy">Composants</li>
+      <li><img src="images/diagrammes/object.png" alt="" loading="lazy">Objets</li>
+      <li><img src="images/diagrammes/mindmap.png" alt="" loading="lazy">Carte mentale</li>
+      <li><img src="images/diagrammes/wbs.png" alt="" loading="lazy">WBS</li>
+      <li><img src="images/diagrammes/gantt.png" alt="" loading="lazy">Gantt</li>
+      <li><img src="images/diagrammes/json.png" alt="" loading="lazy">JSON</li>
+      <li><img src="images/diagrammes/yaml.png" alt="" loading="lazy">YAML</li>
+    </ul>
+  </section>
+
+  <section class="fonction">
+    <div>
+      <h2>SIMP inclus</h2>
+      <p>Un projet SIMP s'ouvre dans un nouvel onglet, sans rien écrire à côté de la source. Le convertisseur s'utilise aussi seul, en ligne de commande.</p>
+      <a href="guide/conversion/">Ligne de commande</a>
+    </div>
+    <figure class="fenetre"><picture><source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/simp.png"><img src="images/simp.gif" alt="Import d'un projet SIMP dans un nouvel onglet." width="1200" height="750" loading="lazy"></picture></figure>
+  </section>
+
+  <section class="demarrer">
+    <h2>Démarrer</h2>
+    <p>L'éditeur se construit depuis les sources, avec Nim et Rust. Aucune version précompilée n'est publiée pour l'instant.</p>
+<pre><code>git clone https://git.sethmartin.dev/Seth_Martin/simp2puml.git
+cd simp2puml/renderer &amp;&amp; nimble build
+cd ../editor &amp;&amp; cargo build --release
+./target/release/puml-editor diagramme.puml</code></pre>
+    <p><a class="bouton principal" href="guide/installation/">Toutes les méthodes d'installation</a></p>
+  </section>
+</main>
+<footer class="pied">
+  <p>Le convertisseur d'origine a été créé par <strong>ASaki</strong>, dans le <a href="https://github.com/2534296-Mailloux-Nela/simp2puml">dépôt de Nela</a>. Licence <a href="https://git.sethmartin.dev/Seth_Martin/simp2puml/src/branch/editeur-puml/LICENSE">MIT</a>. PlantUML est un projet distinct, téléchargé à la demande et non redistribué.</p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{titre}} · simp2puml</title>
+<meta name="description" content="{{resume}}">
+<link rel="canonical" href="{{url}}">
+<meta property="og:title" content="{{titre}} · simp2puml">
+<meta property="og:description" content="{{resume}}">
+<meta property="og:image" content="https://simp2puml.sethmartin.dev/images/editeur-clair.png">
+<link rel="icon" href="{{racine}}favicon.png">
+<link rel="stylesheet" href="{{racine}}style.css">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="{{racine}}site.js" defer></script>
+</head>
+<body class="doc" data-racine="{{racine}}">
+<a class="evitement" href="#contenu">Aller au contenu</a>
+<header class="barre">
+  <a class="marque" href="{{racine}}"><img src="{{racine}}portrait.png" alt="" width="28" height="28">simp2puml</a>
+  <div class="recherche" role="search">
+    <input id="recherche" type="search" placeholder="Rechercher" aria-label="Rechercher dans la documentation" aria-controls="resultats" aria-expanded="false" autocomplete="off">
+    <kbd aria-hidden="true">/</kbd>
+    <ul id="resultats" class="resultats" hidden></ul>
+  </div>
+  <nav class="barre-liens" aria-label="Liens du site">
+    <a href="{{racine}}guide/installation/">Documentation</a>
+    <a href="https://git.sethmartin.dev/Seth_Martin/simp2puml">Code</a>
+    <button id="theme" type="button" aria-label="Changer de thème" title="Changer de thème"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+  </nav>
+</header>
+<div class="cadre">
+  <details class="menu-mobile"><summary>Pages de la documentation</summary><nav aria-label="Pages de la documentation">{{navigation}}</nav></details>
+  <aside class="pages"><nav aria-label="Pages de la documentation">{{navigation}}</nav></aside>
+  <main id="contenu">
+    <article>
+      <p class="fil">{{groupe}}</p>
+      <h1>{{titre}}</h1>
+      <p class="chapeau">{{resume}}</p>
+{{corps}}
+    </article>
+    <nav class="suite" aria-label="Page précédente ou suivante">{{suite}}</nav>
+    <p class="modifier"><a href="{{source}}">Voir cette page dans le dépôt</a></p>
+  </main>
+  <aside class="droite">{{sommaire}}</aside>
+</div>
+</body>
+</html>
