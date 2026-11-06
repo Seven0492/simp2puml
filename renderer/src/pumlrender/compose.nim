@@ -44,7 +44,7 @@ proc compose*(ctx: Context, meta: Meta, inner: Svg, w, h: float, regionStart = 0
       of "left": pad
       of "center": (W - legendW) / 2
       else: W - legendW - pad
-    svg.rect(lx, y, legendW, legendH, "#F3F4F6", Muted, 4)
+    svg.rect(lx, y, legendW, legendH, HeaderFill, Muted, 4)
     svg.textBlock(lx + 10, y + 7, legendLines)
     ctx.region(meta.legendLine, lx, y, legendW, legendH)
     y += legendH + 4
@@ -60,7 +60,7 @@ proc placeholder*(ctx: Context, title, message: string): (Svg, float, float) =
   var svg: Svg
   let lines = @[title, message]
   let w = max(blockWidth(lines, 13, true) + 40, 240.0)
-  svg.rect(10, 10, w, 64, "#F3F4F6", Muted, 6, 1.2, "5 4")
+  svg.rect(10, 10, w, 64, HeaderFill, Muted, 6, 1.2, "5 4")
   svg.text(10 + w / 2, 36, title, "middle", 13, bold = true)
   svg.text(10 + w / 2, 56, message, "middle", 12, fill = Muted)
   (svg, w + 20, 84.0)

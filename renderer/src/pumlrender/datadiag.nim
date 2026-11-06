@@ -65,7 +65,7 @@ proc draw(svg: var Svg, b: DBox, ctx: Context, maxX, maxY: var float) =
   if b.rows.len == 0: ctx.region(b.line, b.x, b.y, b.w, b.h)
   for i, r in b.rows:
     let ry = b.y + float(i) * RowH
-    if i > 0: svg.line(b.x, ry, b.x + b.w, ry, "#C7CEDB", 1)
+    if i > 0: svg.line(b.x, ry, b.x + b.w, ry, Muted, 1)
     if b.keyW > 0:
       svg.rect(b.x, ry, b.keyW, RowH, HeaderFill, "none", 0, 0)
       svg.text(b.x + 8, ry + 14, r.key, size = 12, bold = true)
@@ -85,7 +85,7 @@ proc draw(svg: var Svg, b: DBox, ctx: Context, maxX, maxY: var float) =
       svg.path("M" & fmtF(sx - 8) & " " & fmtF(sy) & " C" & fmtF(mx) & " " & fmtF(sy) & " " & fmtF(mx) & " " &
         fmtF(ey) & " " & fmtF(ex) & " " & fmtF(ey))
       draw(svg, c, ctx, maxX, maxY)
-  if b.keyW > 0: svg.line(b.x + b.keyW, b.y, b.x + b.keyW, b.y + b.h, "#C7CEDB", 1)
+  if b.keyW > 0: svg.line(b.x + b.keyW, b.y, b.x + b.keyW, b.y + b.h, Muted, 1)
   svg.rect(b.x, b.y, b.w, b.h, "none", Stroke, 4)
 
 # ------------------------------------------------------------------ JSON
@@ -94,7 +94,9 @@ type JsonLineError = object of CatchableError
   line: int  ## ligne dans le texte du bloc (à partir de 1)
 
 proc fail(p: JsonParser) {.noreturn.} =
-  var e = newException(JsonLineError, errorMsg(p))
+  # errorMsg n'est valable que sur un évènement d'erreur
+  let message = if p.kind == jsonError: errorMsg(p) else: "input(" & $getLine(p) & ", " & $getColumn(p) & ") contenu inattendu"
+  var e = newException(JsonLineError, message)
   e.line = getLine(p)
   raise e
 

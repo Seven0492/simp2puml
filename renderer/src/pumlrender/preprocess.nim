@@ -1,15 +1,16 @@
 ## Découpage des blocs @start/@end, commentaires, directives communes et
-## détection du type de diagramme. Le préprocesseur PlantUML (!include,
-## !define, !theme…) n'est jamais exécuté : ses lignes sont signalées et ignorées.
+## détection du type de diagramme. Le préprocesseur est celui, sûr et borné, de
+## `macros.nim` ; !include et !import ne chargent jamais rien : ils sont signalés.
 import std/[strutils]
-import common
+import common, macros, themes
 
 type
   DiagramKind* = enum
     dkClass = "class", dkSequence = "sequence", dkActivity = "activity",
     dkState = "state", dkUsecase = "usecase", dkComponent = "component",
     dkObject = "object", dkMindmap = "mindmap", dkWbs = "wbs", dkGantt = "gantt",
-    dkJson = "json", dkYaml = "yaml", dkTiming = "timing", dkUnsupported = "unsupported",
+    dkJson = "json", dkYaml = "yaml", dkTiming = "timing", dkSalt = "salt", dkDitaa = "ditaa",
+    dkUnsupported = "unsupported",
     dkEmpty = "empty"
 
   Doc* = object
@@ -25,7 +26,7 @@ type
     startLine*: int
     lines*: seq[SrcLine]
 
-const UnsupportedTags* = ["salt", "ditaa", "dot", "math", "latex", "regex", "ebnf",
+const UnsupportedTags* = ["dot", "math", "latex", "regex", "ebnf",
   "nwdiag", "wire", "chart", "chronology", "files", "board", "creole", "chen", "def", "flow", "sdl", "git"]
 
 proc findBlocks*(text: string): seq[Block] =
@@ -79,12 +80,18 @@ proc stripComments(lines: seq[SrcLine]): seq[SrcLine] =
 
 proc detectKind(lines: seq[SrcLine]): DiagramKind =
   var score: array[DiagramKind, int]
+  var inNote = false
   var arrows = 0
   for l in lines:
     let t = l.text.strip()
     if t.len == 0: continue
     let lw = t.toLowerAscii()
     template hit(k: DiagramKind, n: int) = score[k] += n
+    # le corps d'une note n'est pas du diagramme (un tableau créole ressemblerait à un couloir)
+    if inNote:
+      if lw in ["end note", "endnote"]: inNote = false
+      continue
+    if (lw.startsWith("note ") or lw == "note") and not t.contains(':'): inNote = true
     if (t.startsWith(":") and (t.endsWith(";") or t.endsWith("|") or t.endsWith(">") or t.endsWith("]") or t.endsWith("}") or t.endsWith("/"))) or
         lw in ["start", "stop", "end", "detach", "kill", "fork", "fork again", "end fork", "repeat",
                "endif", "endwhile", "split", "split again", "end split", "endswitch", "end merge"] or
@@ -206,20 +213,55 @@ proc handleCommon(lines: seq[SrcLine], ctx: Context, meta: var Meta, keepMultili
       meta.legendAlign = t.afterWord("legend").toLowerAscii()
       meta.legend = collect("end legend")
     elif lw.startsWithWord("skinparam"):
+      let body = t.afterWord("skinparam")
       if t.endsWith("{"):
+        let prefix = body[0 .. ^2].strip()
         inc i
-        while i < lines.len and lines[i].text.strip() != "}": inc i
+        while i < lines.len and lines[i].text.strip() != "}":
+          let parts = lines[i].text.strip().splitWhitespace(1)
+          if parts.len == 2 and not applySkinparam(prefix & parts[0], parts[1]):
+            ctx.info(lines[i].num, "skinparam non pris en charge : " & prefix & parts[0])
+          inc i
         if i >= lines.len:
           ctx.error(l.num, "bloc skinparam non fermé (« } » manquant) : la suite du diagramme est ignorée")
-      ctx.info(l.num, "skinparam ignoré : le rendu natif utilise son propre style")
+      else:
+        let parts = body.splitWhitespace(1)
+        if parts.len < 2 or not applySkinparam(parts[0], parts[1]):
+          ctx.info(l.num, "skinparam non pris en charge : " & body)
+    elif lw.startsWithWord("sprite"):
+      # « sprite $nom [16x16/16] { … } » ; le corps est lu ici, jamais interprété comme du diagramme
+      let body = t.afterWord("sprite")
+      let parts = body.splitWhitespace()
+      if parts.len == 0:
+        ctx.warn(l.num, "sprite sans nom")
+      elif "<svg" in body or "<" in parts[^1]:
+        ctx.warn(l.num, "sprite au format SVG non pris en charge : " & parts[0])
+      else:
+        var size = ""
+        if parts.len >= 2 and parts[1].startsWith("["): size = parts[1]
+        var rows: seq[string]
+        if t.endsWith("{"):
+          inc i
+          while i < lines.len and lines[i].text.strip() != "}":
+            let row = lines[i].text.strip()
+            if row.len > 0: rows.add row
+            inc i
+          if i >= lines.len: ctx.error(l.num, "sprite non fermé (« } » manquant)")
+        parseSpriteRows(parts[0], size, rows, l.num, ctx)
     elif lw.startsWithWord("hide") or lw.startsWithWord("show") or lw.startsWithWord("scale") or
         lw.startsWithWord("page") or lw.startsWithWord("allowmixing") or lw.startsWithWord("allow_mixing") or
         lw.startsWithWord("set") and lw.contains("separator") or lw.startsWithWord("mainframe") or
         lw.startsWithWord("skin") or lw.startsWithWord("pragma") or lw.startsWith("<style>") or lw == "style":
       if lw.startsWith("<style>"):
-        while i < lines.len and not lines[i].text.contains("</style>"): inc i
+        var css = t[7 .. ^1] & "\n"
+        while i < lines.len and not lines[i].text.contains("</style>"):
+          if lines[i].num != l.num: css.add lines[i].text & "\n"
+          inc i
         if i >= lines.len:
           ctx.error(l.num, "bloc <style> non fermé (« </style> » manquant) : la suite du diagramme est ignorée")
+        else:
+          if lines[i].num != l.num: css.add lines[i].text.split("</style>")[0]
+          applyStyleBlock(css.replace("</style>", ""), l.num, ctx)
       elif not (lw.startsWithWord("hide") or lw.startsWithWord("show")):
         ctx.info(l.num, "directive graphique ignorée : " & t)
       else:
@@ -255,12 +297,28 @@ proc prepare*(text: string, ctx: Context, blockIndex = 0): Doc =
     ctx.error(blk.startLine, "@end" & blk.tag & " manquant")
   result.tag = blk.tag
   result.startLine = blk.startLine
-  let cleaned = stripComments(blk.lines)
-  result.raw = cleaned
+  let uncommented = stripComments(blk.lines)
+  result.raw = uncommented
+  # JSON et YAML ne sont pas du texte de diagramme : « ! » et « $ » y restent littéraux
+  let cleaned = if blk.tag in ["json", "yaml"]: uncommented else: expandMacros(uncommented, ctx)
   case blk.tag
   of "uml", "":
     result.lines = handleCommon(cleaned, ctx, result.meta, true)
     result.kind = detectKind(result.lines)
+    # « salt » ou « ditaa » en tête d'un @startuml
+    for k, line in result.lines:
+      let t = line.text.strip().toLowerAscii()
+      if t.len == 0: continue
+      if t in ["salt", "ditaa"]:
+        result.kind = if t == "salt": dkSalt else: dkDitaa
+        result.lines = result.lines[k + 1 .. ^1]
+      break
+  of "salt":
+    result.lines = handleCommon(cleaned, ctx, result.meta, true)
+    result.kind = dkSalt
+  of "ditaa":
+    result.lines = cleaned
+    result.kind = dkDitaa
   of "mindmap":
     result.lines = handleCommon(cleaned, ctx, result.meta, true)
     result.kind = dkMindmap

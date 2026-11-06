@@ -51,7 +51,7 @@ type
 const
   ClassKeywords = ["abstract class", "abstract", "class", "interface", "enum", "annotation",
     "protocol", "struct", "exception", "metaclass", "stereotype", "entity", "dataclass", "record"]
-  ContainerKeywords = ["package", "namespace", "node", "frame", "folder", "rectangle", "cloud",
+  ContainerKeywords = ["archimate", "package", "namespace", "node", "frame", "folder", "rectangle", "cloud",
     "database", "component", "card", "storage", "artifact", "hexagon", "together", "partition",
     "queue", "stack", "file", "agent", "boundary", "person", "process"]
   OtherKeywords = ["usecase/", "usecase", "actor/", "actor", "object", "map", "state", "port", "portin",
@@ -77,7 +77,7 @@ proc shapeFor(keyword: string): Shape =
   of "folder": shFolder
   of "frame": shFrame
   of "package", "namespace": shPackage
-  of "rectangle", "process": shRectangle
+  of "rectangle", "process", "archimate": shRectangle
   of "queue": shQueue
   of "stack": shStack
   of "card": shCard
@@ -328,6 +328,11 @@ proc tryRelation(g: var GraphDiagram, text: string, line, scope: int, ctx: Conte
 
 proc parseDecl(g: var GraphDiagram, text: string, line: int, scope: var seq[int],
                bodyOf: var int, ctx: Context): bool =
+  # « archimate #Technology "x" as y » : la couleur vient avant le nom
+  var text = text
+  if text.toLowerAscii().startsWith("archimate #"):
+    let parts = text.splitWhitespace(2)
+    if parts.len == 3: text = "archimate " & parts[2] & " " & parts[1]
   let lw = text.toLowerAscii()
   var keyword = ""
   for kw in ClassKeywords:
@@ -737,7 +742,9 @@ proc classSections(g: GraphDiagram, e: Entity): seq[seq[string]] =
 proc labelLines(e: Entity): seq[string] = splitLabel(e.label)
 
 proc stereoText(g: GraphDiagram, e: Entity): string =
-  if e.stereo.len == 0 or g.hideStereo: "" else: "«" & e.stereo & "»"
+  if e.stereo.len == 0 or g.hideStereo: ""
+  elif e.stereo.startsWith("$") and Sprites.hasKey(e.stereo[1 .. ^1]): "<" & e.stereo & ">"
+  else: "«" & e.stereo & "»"
 
 proc headerSize(g: GraphDiagram, e: Entity): (float, float) =
   let lines = e.labelLines
@@ -983,7 +990,45 @@ proc classIcon(e: Entity): (string, string) =
 proc drawLabelUnder(svg: var Svg, e: Entity, top: float) =
   svg.textBlock(e.x + e.w / 2, top, e.labelLines, "middle")
 
+proc styleKey(e: Entity): string =
+  case e.shape
+  of shClass: "class"
+  of shObject: "object"
+  of shMap: "map"
+  of shUsecase: "usecase"
+  of shActor, shPerson: "actor"
+  of shComponent: "component"
+  of shInterface, shCircle: "interface"
+  of shNode: "node"
+  of shDatabase: "database"
+  of shCloud: "cloud"
+  of shArtifact: "artifact"
+  of shFile: "file"
+  of shFolder: "folder"
+  of shFrame: "frame"
+  of shPackage: "package"
+  of shRectangle: (if e.keyword == "archimate": "archimate" else: "rectangle")
+  of shQueue: "queue"
+  of shStack: "stack"
+  of shCard: "card"
+  of shAgent: "agent"
+  of shStorage: "storage"
+  of shState: "state"
+  of shActivity, shForkBar: "activity"
+  of shBoundary: "boundary"
+  of shControl: "control"
+  of shEntity: "entity"
+  of shCollections: "collections"
+  of shNote: "note"
+  else: ""
+
+proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context)
+
 proc drawEntity(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
+  styled(styleKey(e)):
+    g.drawEntityStyled(svg, e, ctx)
+
+proc drawEntityStyled(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
   let fill = if e.color.len > 0: e.color else: Fill
   let (x, y, w, h) = (e.x, e.y, e.w, e.h)
   let st = g.stereoText(e)
@@ -1083,7 +1128,7 @@ proc drawEntity(g: GraphDiagram, svg: var Svg, e: Entity, ctx: Context) =
   of shStart:
     svg.circle(x + w / 2, y + h / 2, 10, Ink, Ink)
   of shEnd:
-    svg.circle(x + w / 2, y + h / 2, 11, "#FFFFFF", Ink, 1.4)
+    svg.circle(x + w / 2, y + h / 2, 11, Background, Ink, 1.4)
     svg.circle(x + w / 2, y + h / 2, 6.5, Ink, Ink)
   of shPoint:
     svg.circle(x + w / 2, y + h / 2, 4, Ink, Ink)
@@ -1210,8 +1255,8 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
   if r.hidden: return
   let ea = g.entities[r.a]
   let eb = g.entities[r.b]
-  let color = if r.color.len > 0: r.color else: Stroke
-  let sw = if r.bold: 2.2 else: 1.2
+  let color = if r.color.len > 0: r.color else: arrowStroke()
+  let sw = if r.bold: 2.2 else: LineWidth
   let dash = if r.dashed: "6 4" else: ""
   if r.a == r.b:
     let (bx, by, bw, bh) = ea.shapeBox
@@ -1277,7 +1322,7 @@ proc drawRel(g: GraphDiagram, svg, labels: var Svg, r: Rel, offset: float, ctx: 
     let lx = if nx < -0.5: mx - lw / 2 - 6
              elif nx > 0.5 or vertical: mx + lw / 2 + 6
              else: mx
-    labels.rect(lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2, "#FFFFFF", "none", 0, 0, "", "fill-opacity=\"0.85\"")
+    labels.rect(lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2, Background, "none", 0, 0, "", "fill-opacity=\"0.85\"")
     labels.textBlock(lx, my - lh / 2, lines, "middle", 12)
     ctx.region(r.line, lx - lw / 2 - 3, my - lh / 2 - 1, lw + 6, lh + 2)
   else:

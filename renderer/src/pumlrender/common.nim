@@ -1,6 +1,6 @@
 ## Types partagés : diagnostics, régions cliquables, métriques de texte,
 ## construction SVG et petit analyseur lexical sans expressions régulières.
-import std/[strutils, math]
+import std/[strutils, math, tables]
 from std/unicode import Rune, runes, runeAt, runeLenAt, validateUtf8
 
 type
@@ -36,10 +36,29 @@ type
     defs*: string
 
 const
-  FontFamily* = "DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif"
   MonoFamily* = "DejaVu Sans Mono, Liberation Mono, monospace"
+  DefaultFontFamily = "DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif"
+  ## Au-delà, le rendu s'arrête avec un diagnostic : les passes de mise en page
+  ## sont récursives et une pile épuisée tuerait le processus sans message.
+  MaxNesting* = 200
+
+type
+  ElementStyle* = object
+    ## Réglages d'un type d'élément (`skinparam`, `<style>`) ; vide : hérité.
+    bg*, border*, font*: string
+    thickness*: float
+
+  Sprite* = object
+    width*, height*, levels*: int
+    pixels*: seq[int]  ## largeur × hauteur niveaux de gris, 0 : transparent
+
+# Palette du rendu en cours : remise à zéro par `resetStyle`, puis modifiée par
+# `!theme`, `skinparam` et `<style>`. Le moteur traite un rendu à la fois.
+var
+  FontFamily* = DefaultFontFamily
   FontSize* = 13.0
   LineHeight* = 16.0
+  LineWidth* = 1.2
   Ink* = "#1F2430"
   Stroke* = "#3B4252"
   Fill* = "#F7F8FC"
@@ -49,10 +68,45 @@ const
   Accent* = "#3A6EA5"
   Muted* = "#6B7280"
   FrameFill* = "#FBFBFD"
+  Background* = "#FFFFFF"
+  ArrowColor* = ""     ## vide : celle du trait
+  Elements*: Table[string, ElementStyle]
+  Sprites*: Table[string, Sprite]
 
-  ## Au-delà, le rendu s'arrête avec un diagnostic : les passes de mise en page
-  ## sont récursives et une pile épuisée tuerait le processus sans message.
-  MaxNesting* = 200
+proc resetStyle*() =
+  FontFamily = DefaultFontFamily
+  FontSize = 13.0
+  LineHeight = 16.0
+  LineWidth = 1.2
+  Ink = "#1F2430"
+  Stroke = "#3B4252"
+  Fill = "#F7F8FC"
+  HeaderFill = "#E8ECF6"
+  NoteFill = "#FFF6BF"
+  NoteStroke = "#B49B2F"
+  Accent = "#3A6EA5"
+  Muted = "#6B7280"
+  FrameFill = "#FBFBFD"
+  Background = "#FFFFFF"
+  ArrowColor = ""
+  Elements.clear()
+  Sprites.clear()
+
+template styled*(element: string, body: untyped) =
+  ## Exécute `body` avec les couleurs réglées pour ce type d'élément.
+  let savedStyle = (Ink, Stroke, Fill, HeaderFill, LineWidth)
+  let es = Elements.getOrDefault(element)
+  if es.bg.len > 0:
+    Fill = es.bg
+    HeaderFill = es.bg
+  if es.border.len > 0: Stroke = es.border
+  if es.font.len > 0: Ink = es.font
+  if es.thickness > 0: LineWidth = es.thickness
+  body
+  (Ink, Stroke, Fill, HeaderFill, LineWidth) = savedStyle
+
+proc arrowStroke*(): string =
+  if ArrowColor.len > 0: ArrowColor else: Stroke
 
 type TooComplex* = object of CatchableError
   ## Diagramme refusé : la ligne fautive accompagne le message.
@@ -103,10 +157,129 @@ proc runeWidth(r: Rune): float =
   else:
     0.6
 
-proc textWidth*(s: string, size = FontSize, bold = false): float =
+proc plainWidth(s: string, size = FontSize, bold = false): float =
   var w = 0.0
   for r in s.runes: w += runeWidth(r)
   result = w * size * (if bold: 1.1 else: 1.03)
+
+proc colorValue*(s: string): string
+
+# ---------------------------------------------------------------- texte enrichi
+
+type Run = object
+  ## Morceau de texte de même aspect, ou sprite si `sprite` n'est pas vide.
+  text, color, sprite: string
+  bold, italic, underline, mono: bool
+  size, scale: float
+
+proc spriteParts(tag: string): (string, float, string) =
+  ## « $nom{scale=2,color=red} » → (nom, échelle, couleur)
+  var name = tag
+  var scale = 1.0
+  var color = ""
+  let open = tag.find('{')
+  if open >= 0 and tag.endsWith("}"):
+    name = tag[0 ..< open]
+    for part in tag[open + 1 .. ^2].split(','):
+      let kv = part.split('=')
+      if kv.len == 2:
+        case kv[0].strip().toLowerAscii()
+        of "scale":
+          try: scale = clamp(parseFloat(kv[1].strip()), 0.1, 8.0) except ValueError: discard
+        of "color": color = kv[1].strip()
+        else: discard
+  (name.strip(chars = {'$', ' '}), scale, color)
+
+const MarkupStart = {'*', '/', '_', '"', '~', '<'}
+
+proc parseRuns(s: string, size: float, bold, italic, underline, mono: bool, color: string): seq[Run] =
+  ## Créole courant : **gras**, //italique//, __souligné__, ""mono"", ~~souligné~~,
+  ## <b> <i> <u> <color:x> <size:n> et sprites <$nom>. Un « ~ » annule le balisage suivant.
+  var cur = Run(size: size, bold: bold, italic: italic, underline: underline, mono: mono, color: color)
+  var stack: seq[Run]
+  template flush() =
+    if cur.text.len > 0:
+      result.add cur
+      cur.text = ""
+  var i = 0
+  while i < s.len:
+    let c = s[i]
+    if c notin MarkupStart:
+      cur.text.add c
+      inc i
+      continue
+    let two = if i + 1 < s.len: s[i .. i + 1] else: ""
+    if c == '~' and i + 1 < s.len and s[i + 1] in {'*', '/', '_', '"', '<', '~'} and two != "~~":
+      cur.text.add s[i + 1]
+      i += 2
+    elif two == "**":
+      flush()
+      cur.bold = not cur.bold
+      i += 2
+    elif two == "//" and (i == 0 or s[i - 1] != ':'):
+      flush()
+      cur.italic = not cur.italic
+      i += 2
+    elif two == "__" or two == "~~":
+      flush()
+      cur.underline = not cur.underline
+      i += 2
+    elif two == "\"\"":
+      flush()
+      cur.mono = not cur.mono
+      i += 2
+    elif c == '<':
+      let e = s.find('>', i)
+      let tag = if e > i: s[i + 1 ..< e] else: ""
+      let lw = tag.toLowerAscii()
+      if tag.startsWith("$") and Sprites.hasKey(spriteParts(tag)[0]):
+        flush()
+        let (name, scale, col) = spriteParts(tag)
+        result.add Run(sprite: name, scale: scale, color: colorValue(col), size: cur.size)
+      elif lw == "b" or lw == "i" or lw == "u" or lw.startsWith("color") or lw.startsWith("size") or lw == "s":
+        flush()
+        stack.add cur
+        case lw[0]
+        of 'b': cur.bold = true
+        of 'i': cur.italic = true
+        of 'u': cur.underline = true
+        of 'c':
+          let v = colorValue(tag[5 .. ^1].strip(chars = {':', ' ', '='}))
+          if v.len > 0: cur.color = v
+        of 's':
+          if lw != "s":
+            try: cur.size = clamp(parseFloat(tag[4 .. ^1].strip(chars = {':', ' ', '='})), 4.0, 72.0)
+            except ValueError: discard
+        else: discard
+      elif lw.startsWith("/") and lw[1 .. ^1].strip() in ["b", "i", "u", "s", "color", "size"]:
+        flush()
+        if stack.len > 0: cur = stack.pop()
+      else:
+        cur.text.add c
+        inc i
+        continue
+      i = e + 1
+    else:
+      cur.text.add c
+      inc i
+  flush()
+
+proc hasMarkup(s: string): bool =
+  for c in s:
+    if c in MarkupStart: return true
+
+proc spriteSize(r: Run, lineSize: float): (float, float) =
+  ## Un sprite plus haut que la ligne est réduit : la hauteur des boîtes ne dépend que du texte.
+  let sp = Sprites[r.sprite]
+  let k = min(r.scale, lineSize * 1.2 / max(1, sp.height).float)
+  (sp.width.float * k, sp.height.float * k)
+
+proc runWidth(r: Run): float =
+  if r.sprite.len > 0: spriteSize(r, r.size)[0] + 2 else: plainWidth(r.text, r.size, r.bold)
+
+proc textWidth*(s: string, size = FontSize, bold = false): float =
+  if not hasMarkup(s): return plainWidth(s, size, bold)
+  for r in parseRuns(s, size, bold, false, false, false, ""): result += runWidth(r)
 
 proc blockWidth*(lines: seq[string], size = FontSize, bold = false): float =
   for l in lines: result = max(result, textWidth(l, size, bold))
@@ -148,10 +321,8 @@ proc fmtF*(f: float): string =
   if result == "-0": result = "0"
 
 proc unescapeLabel*(s: string): string =
-  ## Convertit les séquences PlantUML \n et \t et enlève le balisage créole simple.
-  result = s.replace("\\n", "\n").replace("\\t", "    ").replace("%n()", "\n")
-  for m in ["**", "//", "__", "\"\"", "~~"]:
-    result = result.replace(m, "")
+  ## Convertit les séquences PlantUML \\n et \\t ; le balisage créole reste, interprété par `text`.
+  s.replace("\\n", "\n").replace("\\t", "    ").replace("%n()", "\n")
 
 proc splitLabel*(s: string): seq[string] =
   result = unescapeLabel(s).split('\n')
@@ -165,7 +336,20 @@ proc colorValue*(s: string): string =
   ## #RRGGBB, #nom ou nom → couleur SVG sûre ; vide si invalide.
   var t = s.strip()
   if t.startsWith("#"): t = t[1 .. ^1]
+  # dégradé « a/b », « a|b », « a\\b », « a-b » : la première couleur
+  for sep in ['/', '|', '\\', '-']:
+    let p = t.find(sep)
+    if p > 0: t = t[0 ..< p]
   if t.len == 0: return ""
+  case t.toLowerAscii()
+  of "business": return "#FFFFCC"
+  of "application": return "#C2F0FF"
+  of "motivation": return "#CCCCFF"
+  of "strategy": return "#F5DEAA"
+  of "technology": return "#C9FFC9"
+  of "physical": return "#97FF97"
+  of "implementation": return "#FFE0E0"
+  else: discard
   for c in t:
     if c notin {'0'..'9', 'a'..'z', 'A'..'Z'}: return ""
   var hex = t.len in [3, 6, 8]
@@ -178,7 +362,7 @@ proc colorValue*(s: string): string =
 proc add*(svg: var Svg, s: string) = svg.body.add s
 
 proc rect*(svg: var Svg, x, y, w, h: float, fill = Fill, stroke = Stroke,
-           rx = 0.0, sw = 1.2, dash = "", extra = "") =
+           rx = 0.0, sw = LineWidth, dash = "", extra = "") =
   svg.add "<rect x=\"" & fmtF(x) & "\" y=\"" & fmtF(y) & "\" width=\"" & fmtF(w) &
     "\" height=\"" & fmtF(h) & "\""
   if rx > 0: svg.add " rx=\"" & fmtF(rx) & "\""
@@ -187,28 +371,28 @@ proc rect*(svg: var Svg, x, y, w, h: float, fill = Fill, stroke = Stroke,
   if extra.len > 0: svg.add " " & extra
   svg.add "/>\n"
 
-proc line*(svg: var Svg, x1, y1, x2, y2: float, stroke = Stroke, sw = 1.2, dash = "") =
+proc line*(svg: var Svg, x1, y1, x2, y2: float, stroke = Stroke, sw = LineWidth, dash = "") =
   svg.add "<line x1=\"" & fmtF(x1) & "\" y1=\"" & fmtF(y1) & "\" x2=\"" & fmtF(x2) &
     "\" y2=\"" & fmtF(y2) & "\" stroke=\"" & stroke & "\" stroke-width=\"" & fmtF(sw) & "\""
   if dash.len > 0: svg.add " stroke-dasharray=\"" & dash & "\""
   svg.add "/>\n"
 
-proc circle*(svg: var Svg, cx, cy, r: float, fill = Fill, stroke = Stroke, sw = 1.2) =
+proc circle*(svg: var Svg, cx, cy, r: float, fill = Fill, stroke = Stroke, sw = LineWidth) =
   svg.add "<circle cx=\"" & fmtF(cx) & "\" cy=\"" & fmtF(cy) & "\" r=\"" & fmtF(r) &
     "\" fill=\"" & fill & "\" stroke=\"" & stroke & "\" stroke-width=\"" & fmtF(sw) & "\"/>\n"
 
-proc ellipse*(svg: var Svg, cx, cy, rx, ry: float, fill = Fill, stroke = Stroke, sw = 1.2) =
+proc ellipse*(svg: var Svg, cx, cy, rx, ry: float, fill = Fill, stroke = Stroke, sw = LineWidth) =
   svg.add "<ellipse cx=\"" & fmtF(cx) & "\" cy=\"" & fmtF(cy) & "\" rx=\"" & fmtF(rx) &
     "\" ry=\"" & fmtF(ry) & "\" fill=\"" & fill & "\" stroke=\"" & stroke &
     "\" stroke-width=\"" & fmtF(sw) & "\"/>\n"
 
-proc path*(svg: var Svg, d: string, fill = "none", stroke = Stroke, sw = 1.2, dash = "") =
+proc path*(svg: var Svg, d: string, fill = "none", stroke = Stroke, sw = LineWidth, dash = "") =
   svg.add "<path d=\"" & d & "\" fill=\"" & fill & "\" stroke=\"" & stroke &
     "\" stroke-width=\"" & fmtF(sw) & "\" stroke-linejoin=\"round\""
   if dash.len > 0: svg.add " stroke-dasharray=\"" & dash & "\""
   svg.add "/>\n"
 
-proc polygon*(svg: var Svg, pts: openArray[(float, float)], fill = Fill, stroke = Stroke, sw = 1.2) =
+proc polygon*(svg: var Svg, pts: openArray[(float, float)], fill = Fill, stroke = Stroke, sw = LineWidth) =
   var s = ""
   for i, p in pts:
     if i > 0: s.add ' '
@@ -216,9 +400,8 @@ proc polygon*(svg: var Svg, pts: openArray[(float, float)], fill = Fill, stroke 
   svg.add "<polygon points=\"" & s & "\" fill=\"" & fill & "\" stroke=\"" & stroke &
     "\" stroke-width=\"" & fmtF(sw) & "\" stroke-linejoin=\"round\"/>\n"
 
-proc text*(svg: var Svg, x, y: float, s: string, anchor = "start", size = FontSize,
-           bold = false, italic = false, fill = Ink, underline = false, mono = false) =
-  ## y est la ligne de base.
+proc plainText(svg: var Svg, x, y: float, s: string, anchor: string, size: float,
+                bold, italic: bool, fill: string, underline, mono: bool) =
   svg.add "<text x=\"" & fmtF(x) & "\" y=\"" & fmtF(y) & "\" font-family=\"" &
     (if mono: MonoFamily else: FontFamily) & "\" font-size=\"" & fmtF(size) & "\" fill=\"" & fill & "\""
   if anchor != "start": svg.add " text-anchor=\"" & anchor & "\""
@@ -226,6 +409,47 @@ proc text*(svg: var Svg, x, y: float, s: string, anchor = "start", size = FontSi
   if italic: svg.add " font-style=\"italic\""
   if underline: svg.add " text-decoration=\"underline\""
   svg.add ">" & xmlEscape(s) & "</text>\n"
+
+proc drawSprite(svg: var Svg, r: Run, x, baseline: float) =
+  ## Une rangée de rectangles par suite de pixels de même niveau.
+  let sp = Sprites[r.sprite]
+  let (w, h) = spriteSize(r, r.size)
+  let k = w / max(1, sp.width).float
+  let top = baseline - h + r.size * 0.2
+  let col = if r.color.len > 0: r.color else: Ink
+  for row in 0 ..< sp.height:
+    var c = 0
+    while c < sp.width:
+      let v = sp.pixels[row * sp.width + c]
+      var e = c + 1
+      while e < sp.width and sp.pixels[row * sp.width + e] == v: inc e
+      if v > 0:
+        svg.add "<rect x=\"" & fmtF(x + c.float * k) & "\" y=\"" & fmtF(top + row.float * k) & "\" width=\"" &
+          fmtF((e - c).float * k) & "\" height=\"" & fmtF(k) & "\" fill=\"" & col & "\" fill-opacity=\"" &
+          fmtF(v.float / max(1, sp.levels - 1).float) & "\"/>\n"
+      c = e
+
+proc text*(svg: var Svg, x, y: float, s: string, anchor = "start", size = FontSize,
+           bold = false, italic = false, fill = Ink, underline = false, mono = false) =
+  ## y est la ligne de base ; le balisage créole produit un élément par morceau.
+  if not hasMarkup(s):
+    svg.plainText(x, y, s, anchor, size, bold, italic, fill, underline, mono)
+    return
+  let runs = parseRuns(s, size, bold, italic, underline, mono, fill)
+  var total = 0.0
+  for r in runs: total += runWidth(r)
+  var cx = case anchor
+    of "middle": x - total / 2
+    of "end": x - total
+    else: x
+  for r in runs:
+    if r.sprite.len > 0: svg.drawSprite(r, cx + 1, y)
+    else:
+      # SVG écrase les espaces de bord d'un élément : ils deviennent un décalage
+      let shown = r.text.strip(leading = true, trailing = false)
+      let lead = plainWidth(r.text[0 ..< r.text.len - shown.len], r.size, r.bold)
+      svg.plainText(cx + lead, y, shown, "start", r.size, r.bold, r.italic, r.color, r.underline, r.mono)
+    cx += runWidth(r)
 
 proc textBlock*(svg: var Svg, x, top: float, lines: seq[string], anchor = "start",
                 size = FontSize, bold = false, italic = false, fill = Ink) =
@@ -236,11 +460,11 @@ proc textBlock*(svg: var Svg, x, top: float, lines: seq[string], anchor = "start
 
 proc blockHeight*(n: int, size = FontSize): float = float(n) * size * 1.25
 
-proc note*(svg: var Svg, x, y, w, h: float, fill = NoteFill) =
+proc note*(svg: var Svg, x, y, w, h: float, fill = NoteFill, stroke = NoteStroke) =
   let f = 9.0
   svg.path("M" & fmtF(x) & " " & fmtF(y) & " H" & fmtF(x + w - f) & " L" & fmtF(x + w) & " " &
-    fmtF(y + f) & " V" & fmtF(y + h) & " H" & fmtF(x) & " Z", fill, NoteStroke)
-  svg.path("M" & fmtF(x + w - f) & " " & fmtF(y) & " V" & fmtF(y + f) & " H" & fmtF(x + w), "none", NoteStroke)
+    fmtF(y + f) & " V" & fmtF(y + h) & " H" & fmtF(x) & " Z", fill, stroke)
+  svg.path("M" & fmtF(x + w - f) & " " & fmtF(y) & " V" & fmtF(y + f) & " H" & fmtF(x + w), "none", stroke)
 
 proc arrowHead*(svg: var Svg, x, y, angle: float, style: string, color = Stroke) =
   ## Pointe en (x, y) orientée selon `angle` (direction de la flèche).
@@ -303,7 +527,7 @@ proc finish*(svg: Svg, w, h: float): string =
     "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" & fmtF(W) & "\" height=\"" & fmtF(H) &
     "\" viewBox=\"0 0 " & fmtF(W) & " " & fmtF(H) & "\">\n"
   if svg.defs.len > 0: result.add "<defs>\n" & svg.defs & "</defs>\n"
-  result.add "<rect x=\"0\" y=\"0\" width=\"" & fmtF(W) & "\" height=\"" & fmtF(H) & "\" fill=\"#FFFFFF\"/>\n"
+  result.add "<rect x=\"0\" y=\"0\" width=\"" & fmtF(W) & "\" height=\"" & fmtF(H) & "\" fill=\"" & Background & "\"/>\n"
   result.add svg.body
   result.add "</svg>\n"
 

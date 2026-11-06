@@ -225,7 +225,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
     if weekend: svg.rect(x, headH - 16, dayW, height - headH + 16, "#F1F3F7", "none", 0, 0)
     svg.line(x, headH - 16, x, height - 6, "#E1E5EC", 1)
     svg.text(x + dayW / 2, headH - 4, label, "middle", 10, fill = Muted)
-  svg.line(gx, headH, width - 20, headH, "#C7CEDB", 1)
+  svg.line(gx, headH, width - 20, headH, Muted, 1)
   var rowOf = newSeq[float](tasks.len)
   for i, t in tasks:
     let y = headH + float(i) * rowH
@@ -234,7 +234,7 @@ proc renderGantt*(doc: Doc, ctx: Context): (Svg, float, float) =
       svg.line(left, y + rowH / 2, width - 20, y + rowH / 2, Muted, 1)
       if t.name.len > 0:
         let tw = textWidth(t.name, 11, true) + 12
-        svg.rect((width - tw) / 2, y + 4, tw, 16, "#FFFFFF", Muted, 3, 1)
+        svg.rect((width - tw) / 2, y + 4, tw, 16, Background, Muted, 3, 1)
         svg.text(width / 2, y + 16, t.name, "middle", 11, bold = true, fill = Muted)
       ctx.region(t.line, left, y, width - left, rowH)
       continue

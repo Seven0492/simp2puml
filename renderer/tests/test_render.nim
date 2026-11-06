@@ -34,12 +34,12 @@ suite "échantillons":
       check r.regions.len > 0
 
 suite "diagnostics":
-  test "préprocesseur jamais exécuté":
-    let r = renderPuml("@startuml\n!include /etc/passwd\n!define X 1\nclass A\n@enduml\n")
+  test "aucun fichier n'est jamais lu par le moteur":
+    let r = renderPuml("@startuml\n!include /etc/passwd\n!includeurl http://x.example/a\n$x = %getenv(\"HOME\")\nclass A\n@enduml\n")
     check r.errors.len == 0
-    check r.warnings.len == 2
-    check r.diags[0].line == 2
-    check "passwd" notin r.svg
+    check r.warnings.anyIt("!include" in it)
+    check "root:" notin r.svg
+    check getEnv("HOME") notin r.svg or getEnv("HOME").len == 0
 
   test "@enduml manquant":
     let r = renderPuml("@startuml\nA -> B\n")
@@ -61,7 +61,7 @@ suite "diagnostics":
     check validSvg(r.svg)
 
   test "type non pris en charge : aperçu de remplacement":
-    let r = renderPuml("@startsalt\n{ Login | \"x\" }\n@endsalt\n")
+    let r = renderPuml("@startebnf\na = b;\n@endebnf\n")
     check r.kind == dkUnsupported
     check r.errors.len == 0
     check validSvg(r.svg)
@@ -179,6 +179,168 @@ suite "types et blocs (évaluation)":
     check r.kind == dkClass
     check r.warnings.len == 0
     check "id : int" in r.svg
+
+suite "préprocesseur sûr":
+  proc body(src: string): RenderResult = renderPuml("@startuml\n" & src & "\n@enduml\n")
+
+  test "!define avec et sans paramètres":
+    let r = body("!define NOM Livre\n!define BOITE(n) class n #lightblue\nBOITE(NOM)")
+    check r.errors.len == 0 and r.warnings.len == 0
+    check "Livre" in r.svg and "lightblue" in r.svg
+
+  test "!definelong et !undef":
+    let r = body("!definelong DEUX(a)\nclass a\nclass Autre\n!enddefinelong\nDEUX(Z)\n!define X Y\n!undef X\nclass X")
+    check r.errors.len == 0
+    check "Z" in r.svg and "Autre" in r.svg and ">X<" in r.svg
+
+  test "variables, conditions, boucles, procédures et fonctions":
+    let r = body("""!$t = "Titre" + " final"
+!function $d($x)
+!return $x * 2
+!endfunction
+!procedure $c($n)
+class $n
+!endprocedure
+title $t $d(21)
+!if ($d(2) == 4)
+$c(Oui)
+!else
+$c(Non)
+!endif
+!$i = 0
+!while $i < 2
+class C$i
+!$i = $i + 1
+!endwhile
+!ifdef ABSENT
+class Jamais
+!endif""")
+    check r.errors.len == 0 and r.warnings.len == 0
+    check "Titre final 42" in r.svg
+    check "Oui" in r.svg and "Non" notin r.svg and "Jamais" notin r.svg
+    check "C0" in r.svg and "C1" in r.svg
+
+  test "les lignes restent celles du texte":
+    let r = body("!define A class B\n\nce n'est pas du plantuml ???")
+    check r.warnings.len == 1
+    check r.diags[0].line == 4
+
+  test "boucles et récursions bornées":
+    let infinite = body("!$i = 0\n!while 1\n!$i = $i + 1\n!endwhile\nclass A")
+    check infinite.errors.anyIt("tours" in it)
+    check validSvg(infinite.svg)
+    let self = body("!function $f($x)\n!return $f($x)\n!endfunction\nclass $f(1)")
+    check self.errors.anyIt("trop profonds" in it)
+    check validSvg(self.svg)
+    check validSvg(body("!define A A A\nA").svg)
+    check validSvg(body("!define A B B\n!define B A A\nA").svg)
+
+  test "fonctions à accès extérieur refusées":
+    for f in ["%getenv(\"HOME\")", "%load_json(\"/etc/passwd\")", "%file_exists(\"/etc/passwd\")"]:
+      let r = body("!$x = " & f & "\nclass A")
+      check r.warnings.anyIt("refusée" in it)
+
+  test "JSON et YAML gardent « ! » et « $ » tels quels":
+    check "$prix" in renderPuml("@startjson\n{\"a\": \"$prix\"}\n@endjson\n").svg
+
+suite "styles":
+  proc body(src: string): RenderResult = renderPuml("@startuml\n" & src & "\n@enduml\n")
+
+  test "skinparam par élément, en bloc et global":
+    let r = body("skinparam backgroundColor #FEFECE\nskinparam class {\nBackgroundColor #FFD700\nBorderColor #8B0000\n}\nskinparam ArrowColor #008000\nskinparam noteBackgroundColor #E0FFFF\nclass A\nA --> B\nnote right of B : n")
+    check r.errors.len == 0
+    for c in ["#FEFECE", "#FFD700", "#8B0000", "#008000", "#E0FFFF"]: check c in r.svg
+
+  test "skinparam n'atteint pas les autres éléments ni le rendu suivant":
+    check "#FFD700" notin body("skinparam componentBackgroundColor #FFD700\nclass A").svg
+    discard body("skinparam backgroundColor #123456\nclass A")
+    check "#123456" notin body("class A").svg
+
+  test "couleur et taille par défaut":
+    let r = body("skinparam defaultFontColor #112233\nskinparam defaultFontSize 20\nclass A")
+    check "#112233" in r.svg
+    check "font-size=\"20\"" in r.svg
+
+  test "nom de police sûr":
+    let r = body("skinparam defaultFontName \"x\\\" onload=\\\"y\"\nclass A")
+    check validSvg(r.svg)
+    check "onload" notin r.svg
+
+  test "<style> imbriqué":
+    let r = body("<style>\ndocument { BackGroundColor #EEEEFF }\nclassDiagram {\nclass { BackGroundColor #FFCCCC\nLineColor #CC0000 }\narrow { LineColor #0000CC }\n}\n</style>\nclass A\nA --> B")
+    for c in ["#EEEEFF", "#FFCCCC", "#CC0000", "#0000CC"]: check c in r.svg
+
+  test "!theme":
+    check body("!theme hacker\nclass A").svg != body("class A").svg
+    check body("!theme inconnu\nclass A").warnings.anyIt("thème inconnu" in it)
+    check body("!theme x from http://mal.example\nclass A").warnings.anyIt("refusé" in it)
+
+  test "créole : morceaux séparés et largeur sans le balisage":
+    let r = body("class A {\n**gras** //it// <color:red>rouge</color>\n}")
+    check "font-weight=\"bold\">gras<" in r.svg
+    check "font-style=\"italic\">it<" in r.svg
+    check "fill=\"red\"" in r.svg
+    check "**" notin r.svg and "<color" notin r.svg
+    check textWidth("**ab**") == textWidth("ab", bold = true)
+    check "http://x.example" in body("class A {\nhttp://x.example\n}").svg
+
+suite "types ajoutés":
+  test "salt":
+    let r = renderPuml("@startsalt\n{+\nNom | \"****\"\n[X] Oui | () Non\n^Liste^ | [Valider]\n--\n{T\n+ Racine\n++ Enfant\n}\n}\n@endsalt\n")
+    check r.kind == dkSalt
+    check r.errors.len == 0 and r.warnings.len == 0
+    check validSvg(r.svg)
+    for s in ["Nom", "****", "Oui", "Non", "Liste", "Valider", "Racine", "Enfant"]: check s in r.svg
+    check renderPuml("@startuml\nsalt\n{\nA | B\n}\n@enduml\n").kind == dkSalt
+
+  test "salt : grille non fermée et imbrication extrême":
+    check renderPuml("@startsalt\n{\nA\n@endsalt\n").errors.len == 1
+    var deep = "@startsalt\n"
+    for _ in 1 .. 5_000: deep.add "{\n"
+    check renderPuml(deep & "@endsalt\n").errors.anyIt("imbrication" in it)
+
+  test "timing":
+    let r = renderPuml("@startuml\nrobust \"Nav\" as N\nconcise \"Util\" as U\nclock \"H\" as C with period 10\nbinary \"B\" as B\n@0\nN is Repos\nU is Lire\nB is low\n@50\nN is Actif\nB is high\n@+20 as :fin\nU is Fin\nU -> N : clic\n@N\n60 is Repos\nhighlight 10 to 20 #Gold : zone\n@enduml\n")
+    check r.kind == dkTiming
+    check r.errors.len == 0 and r.warnings.len == 0
+    check validSvg(r.svg)
+    for s in ["Nav", "Util", "Repos", "Actif", "Lire", "clic", "zone"]: check s in r.svg
+
+  test "timing : période minuscule bornée":
+    let r = renderPuml("@startuml\nclock c with period 0.000001\nbinary b\n@0\nb is low\n@1000000\nb is high\n@enduml\n")
+    check validSvg(r.svg)
+    check r.width < 300_000
+
+  test "ditaa":
+    let r = renderPuml("@startditaa\n+-----+  +---+\n|cBLU | -->| B |\n| Txt |  +---+\n+-----+\n@endditaa\n")
+    check r.kind == dkDitaa
+    check validSvg(r.svg)
+    check "Txt" in r.svg and "#3366FF" in r.svg and "cBLU" notin r.svg
+
+  test "archimate":
+    let r = renderPuml("@startuml\narchimate #Technology \"Serveur\" as s <<technology-device>>\narchimate #Application \"Appli\" as a\na --> s\n@enduml\n")
+    check r.errors.len == 0 and r.warnings.len == 0
+    check "Serveur" in r.svg and "#C9FFC9" in r.svg and "#C2F0FF" in r.svg
+
+  test "sprite : dans le texte et en stéréotype":
+    let sprite = "sprite $s [2x2/16] {\nFF\n0F\n}\n"
+    let r = renderPuml("@startuml\n" & sprite & "class A <<$s>>\nclass \"Avec <$s>\" as B\n@enduml\n")
+    check r.errors.len == 0 and r.warnings.len == 0
+    check "fill-opacity" in r.svg
+    check "<$s>" notin r.svg and "$s" notin r.svg
+    check renderPuml("@startuml\nsprite $z [4x4/16z] ABC\nclass A\n@enduml\n").warnings.anyIt("compressé" in it)
+    check renderPuml("@startuml\nsprite $z {\nGG\n}\nclass A\n@enduml\n").warnings.anyIt("illisible" in it)
+
+  test "« & » : même hauteur que le message précédent":
+    let r = renderPuml("@startuml\nA -> B : un\n& A -> C : deux\nB -> A : trois\n@enduml\n")
+    check r.warnings.len == 0
+    proc baseline(text: string): string =
+      let at = r.svg.find(">" & text & "<")
+      let tag = r.svg.rfind("<text", 0, at)
+      let start = r.svg.find(" y=\"", tag) + 4
+      r.svg[start ..< r.svg.find('"', start)]
+    check baseline("un") == baseline("deux")
+    check baseline("trois") != baseline("un")
 
 suite "imbrication extrême : diagnostic, jamais d'arrêt du processus":
   proc rep(s: string, n: int): string =

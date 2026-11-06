@@ -400,11 +400,12 @@ proc measure(n: ANode) =
     n.terminal = n.body.terminal
 
 proc arrowDown(svg: var Svg, x, y0, y1: float) =
-  svg.line(x, y0, x, y1)
-  svg.arrowHead(x, y1, PI / 2, "filled")
+  svg.line(x, y0, x, y1, arrowStroke())
+  svg.arrowHead(x, y1, PI / 2, "filled", arrowStroke())
 
 proc diamond(svg: var Svg, cx, cy: float) =
-  svg.polygon([(cx, cy - Diamond), (cx + Diamond, cy), (cx, cy + Diamond), (cx - Diamond, cy)], HeaderFill)
+  styled("activitydiamond"):
+    svg.polygon([(cx, cy - Diamond), (cx + Diamond, cy), (cx, cy + Diamond), (cx - Diamond, cy)], HeaderFill)
 
 proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context)
 
@@ -443,19 +444,20 @@ proc draw(n: ANode, svg: var Svg, x, y: float, ctx: Context) =
   case n.kind
   of akSeq: drawSeq(n, svg, x, y, ctx)
   of akAction:
-    let fill = if n.color.len > 0: n.color else: Fill
-    svg.rect(x, y, n.w, n.h, fill, Stroke, 10)
-    svg.textBlock(x + 13, y + 8, n.text.split('\n'))
+    styled("activity"):
+      let fill = if n.color.len > 0: n.color else: Fill
+      svg.rect(x, y, n.w, n.h, fill, Stroke, 10)
+      svg.textBlock(x + 13, y + 8, n.text.split('\n'))
     ctx.region(n.line, x, y, n.w, n.h)
   of akStart:
     svg.circle(x + 11, y + 11, 10, Ink, Ink)
     ctx.region(n.line, x, y, n.w, n.h)
   of akStop:
-    svg.circle(x + 12, y + 12, 11, "#FFFFFF", Ink, 1.4)
+    svg.circle(x + 12, y + 12, 11, Background, Ink, 1.4)
     svg.circle(x + 12, y + 12, 6.5, Ink, Ink)
     ctx.region(n.line, x, y, n.w, n.h)
   of akEnd:
-    svg.circle(x + 12, y + 12, 11, "#FFFFFF", Ink, 1.4)
+    svg.circle(x + 12, y + 12, 11, Background, Ink, 1.4)
     svg.line(x + 6, y + 6, x + 18, y + 18, Ink, 1.6)
     svg.line(x + 18, y + 6, x + 6, y + 18, Ink, 1.6)
     ctx.region(n.line, x, y, n.w, n.h)

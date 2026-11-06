@@ -31,6 +31,7 @@ type
     noteShape: string    # note, hnote, rnote
     span: seq[int]
     size: float
+    parallel: bool       # « & » : même hauteur que le message précédent
 
   Box = object
     title, color: string
@@ -66,11 +67,18 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
 
   let lines = doc.lines
   var i = 0
+  var parallelFrom = -1  # premier évènement produit par une ligne « & … »
   while i < lines.len:
+    if parallelFrom >= 0:
+      if parallelFrom < events.len and events[parallelFrom].kind == evMsg: events[parallelFrom].parallel = true
+      parallelFrom = -1
     let l = lines[i]
-    let t = l.text.strip()
+    var t = l.text.strip()
     inc i
     if t.len == 0: continue
+    if t.startsWith("&"):
+      t = t[1 .. ^1].strip()
+      parallelFrom = events.len
     let lw = t.toLowerAscii()
     # --- déclarations
     var declared = false
@@ -383,6 +391,8 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
               continue
       ctx.warn(l.num, "syntaxe de séquence non reconnue, ligne ignorée : " & t)
 
+  if parallelFrom >= 0 and parallelFrom < events.len and events[parallelFrom].kind == evMsg:
+    events[parallelFrom].parallel = true
   if parts.len == 0:
     var svg: Svg
     return (svg, 0.0, 0.0)
@@ -507,7 +517,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     of "cross": svg.arrowHead(x, y, dir, "cross", color)
     of "circle", "circle2": svg.arrowHead(x, y, dir, "circle", color)
     else: discard
-  proc headerBox(svg: var Svg, p: Participant, xc, top: float) =
+  proc headerBoxBody(svg: var Svg, p: Participant, xc, top: float) =
     let lines = splitLabel(p.label)
     let fill = if p.color.len > 0: p.color else: Fill
     let st = if p.stereo.len > 0: "«" & p.stereo & "»" else: ""
@@ -562,6 +572,9 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
 
   var lastMsgTo = newSeq[int](n)
   for k in 0 ..< n: lastMsgTo[k] = -1
+  proc headerBox(svg: var Svg, p: Participant, xc, top: float) =
+    styled("participant"):
+      headerBoxBody(svg, p, xc, top)
   proc lastFrom(p: int): int = lastMsgTo[p]
   var createdY = newSeq[float](n)
   for k in 0 ..< n: createdY[k] = -1
@@ -578,7 +591,16 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     fg.headerBox(parts[p], cx[p], createdY[p])
     ctx.region(parts[p].line, cx[p] - parts[p].w / 2, createdY[p], parts[p].w, parts[p].headH)
 
+  var msgTop, msgBottom = 0.0
   for ev in events:
+    # « & A -> B » : le message démarre à la hauteur du précédent ; la suite reprend sous le plus bas
+    if ev.kind == evMsg and ev.parallel:
+      msgBottom = max(msgBottom, y)
+      y = msgTop
+    else:
+      y = max(y, msgBottom)
+      msgBottom = 0
+      if ev.kind == evMsg: msgTop = y
     case ev.kind
     of evCreate:
       discard
@@ -599,7 +621,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
           continue
       let lines = splitLabel(ev.text)
       let lh = blockHeight(lines.len, 12)
-      let color = if ev.color.len > 0: ev.color else: Stroke
+      let color = if ev.color.len > 0: ev.color else: arrowStroke()
       let dash = if ev.dashed: "6 4" else: ""
       touch(a, b)
       if a >= 0 and a == b:
@@ -694,9 +716,9 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
       extent(x0, x0 + w)
       let fill = if ev.color.len > 0: ev.color else: NoteFill
       if ev.kind == evRef:
-        mid.rect(x0, y, w, th, "#FFFFFF", Stroke, 0, 1.4)
+        mid.rect(x0, y, w, th, Background, Stroke, 0, 1.4)
         mid.path("M" & fmtF(x0) & " " & fmtF(y + 18) & " H" & fmtF(x0 + 34) & " L" & fmtF(x0 + 40) & " " &
-          fmtF(y + 12) & " V" & fmtF(y), "#E5E7EB")
+          fmtF(y + 12) & " V" & fmtF(y), HeaderFill)
         mid.text(x0 + 6, y + 13, "ref", size = 11, bold = true)
         mid.textBlock(x0 + w / 2, y + 22, lines, "middle")
       else:
@@ -759,7 +781,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
       let kw = g.kind
       let kwW = textWidth(kw, 12, true) + 16
       mid.path("M" & fmtF(gx0) & " " & fmtF(g.y0 + 18) & " H" & fmtF(gx0 + kwW) & " L" & fmtF(gx0 + kwW + 7) & " " &
-        fmtF(g.y0 + 11) & " V" & fmtF(g.y0), "#E5E7EB")
+        fmtF(g.y0 + 11) & " V" & fmtF(g.y0), HeaderFill)
       mid.text(gx0 + 6, g.y0 + 13, kw, size = 12, bold = true)
       if g.label.len > 0:
         mid.text(gx0 + kwW + 14, g.y0 + 13, "[" & g.label & "]", size = 12, bold = true)
@@ -769,6 +791,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
       ctx.region(g.line, gx0, g.y0, kwW + 8, 18)
       touch(lo, hi)
       y += 14
+  y = max(y, msgBottom)
   for g in groups:
     ctx.error(g.line, "fragment « " & g.kind & " » non fermé (end manquant)")
   # activations restantes
@@ -781,9 +804,10 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
   for k in 0 ..< n:
     let startY = if createdY[k] >= 0: createdY[k] + parts[k].headH else: top0 + headH
     let endY = if destroyedY[k] >= 0: destroyedY[k] else: bottom
-    bg.line(cx[k], startY, cx[k], endY, Muted, 1, "5 5")
+    let lifeline = Elements.getOrDefault("sequencelifeline").border
+    bg.line(cx[k], startY, cx[k], endY, (if lifeline.len > 0: lifeline else: Muted), 1, "5 5")
   for (p, y0, y1, lvl, col) in bars:
-    bg.rect(cx[p] - 5 + float(lvl) * 5, y0, 10, max(4.0, y1 - y0), (if col.len > 0: col else: "#FFFFFF"), Stroke, 0, 1.1)
+    bg.rect(cx[p] - 5 + float(lvl) * 5, y0, 10, max(4.0, y1 - y0), (if col.len > 0: col else: Background), Stroke, 0, 1.1)
   # boîtes de participants
   var boxSvg: Svg
   for bi, b in boxes:
@@ -797,7 +821,7 @@ proc renderSequence*(doc: Doc, ctx: Context): (Svg, float, float) =
     let x0 = cx[lo] - parts[lo].w / 2 - 8
     let x1 = cx[hi] + parts[hi].w / 2 + 8
     let bh = bottom + (if hideFootbox: 4.0 else: headH + 4) - 0
-    boxSvg.rect(x0, 0, x1 - x0, bh + 4, (if b.color.len > 0: b.color else: "#EEF2F8"), "#C7CEDB", 4, 1)
+    boxSvg.rect(x0, 0, x1 - x0, bh + 4, (if b.color.len > 0: b.color else: HeaderFill), Muted, 4, 1)
     if b.title.len > 0:
       boxSvg.text((x0 + x1) / 2, 12, b.title, "middle", 11, bold = true, fill = Muted)
     ctx.region(b.line, x0, 0, x1 - x0, 16)

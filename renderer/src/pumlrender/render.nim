@@ -1,6 +1,6 @@
 ## Point d'entrée de la bibliothèque : texte PlantUML → SVG + diagnostics.
 import std/[strutils]
-import common, preprocess, compose, graphdiag, sequence, activity, treediag, datadiag, gantt
+import common, preprocess, compose, graphdiag, sequence, activity, treediag, datadiag, gantt, timingdiag, saltdiag, ditaadiag
 
 type RenderResult* = object
   svg*: string
@@ -12,6 +12,7 @@ type RenderResult* = object
 
 proc renderPuml*(text: string, blockIndex = 0): RenderResult =
   let ctx = newContext()
+  resetStyle()
   let text = if text.startsWith("\xEF\xBB\xBF"): text[3 .. ^1] else: text
   let doc = prepare(text, ctx, blockIndex)
   result.blocks = max(1, findBlocks(text).len)
@@ -41,8 +42,11 @@ proc renderPuml*(text: string, blockIndex = 0): RenderResult =
     of dkGantt:
       (inner, w, h) = renderGantt(doc, ctx)
     of dkTiming:
-      ctx.warn(doc.startLine, "diagramme de chronogramme : rendu natif non disponible, texte seulement")
-      (inner, w, h) = placeholder(ctx, "Chronogramme (timing)", "Aperçu natif non disponible pour ce type")
+      (inner, w, h) = renderTiming(doc, ctx)
+    of dkSalt:
+      (inner, w, h) = renderSalt(doc, ctx)
+    of dkDitaa:
+      (inner, w, h) = renderDitaa(doc, ctx)
     of dkUnsupported:
       ctx.warn(doc.startLine, "type @start" & doc.tag & " : aperçu natif non disponible")
       (inner, w, h) = placeholder(ctx, "@start" & doc.tag, "Aperçu natif non disponible pour ce type")
