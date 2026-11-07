@@ -4,7 +4,7 @@ import std/[os, sequtils, strutils, tables, unicode]
 
 const
   Depot = "https://git.sethmartin.dev/Seth_Martin/simp2puml"
-  Branche = "editeur-puml" # à changer pour main dès que main porte docs/ et site/
+  Branche = "main"
   Source = Depot & "/src/branch/" & Branche & "/"
   Url = "https://simp2puml.sethmartin.dev"
 
