@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::services::process;
+
 pub const MAX_INPUT: u64 = 20 * 1024 * 1024;
 
 pub fn read_text(path: &Path) -> Result<String, String> {
@@ -149,14 +151,14 @@ fn converter() -> Command {
 /// dans le PATH (entrées absolues seulement), sinon le module Python.
 pub fn package_tool(env: &str, script: &str, module: &str) -> Command {
     if let Some(p) = std::env::var_os(env) {
-        return Command::new(p);
+        return process::command(p);
     }
     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(script)));
     let in_path = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).map(|d| d.join(script)).collect::<Vec<_>>())
         .unwrap_or_default();
     match beside.into_iter().chain(in_path).find(|c| c.is_file()) {
-        Some(found) => Command::new(found),
+        Some(found) => process::command(found),
         None => python_module(module),
     }
 }
@@ -166,7 +168,7 @@ pub fn package_tool(env: &str, script: &str, module: &str) -> Command {
 /// d'importer le dossier courant).
 pub fn python_module(module: &str) -> Command {
     let python = std::env::var_os("SIMP2PUML_PYTHON").unwrap_or_else(|| "python3".into());
-    let mut cmd = Command::new(python);
+    let mut cmd = process::command(python);
     cmd.arg("-P").arg("-m").arg(module);
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);

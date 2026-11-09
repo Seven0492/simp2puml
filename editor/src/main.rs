@@ -8,6 +8,10 @@
 //!
 //! Usage : puml-editor [fichier.puml|fichier.simp]...
 
+// Windows : application fenêtrée, sans console qui s'ouvre à côté de l'éditeur
+// (les builds de débogage la gardent pour leurs messages).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod keymap;
 mod model;
 mod services;
@@ -37,6 +41,9 @@ Variables d'environnement :
 fn main() {
     let mut paths: Vec<PathBuf> = Vec::new();
     for arg in std::env::args().skip(1) {
+        if arg.starts_with('-') {
+            services::process::attach_parent_console();
+        }
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{HELP}");

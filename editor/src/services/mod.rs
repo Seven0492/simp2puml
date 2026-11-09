@@ -5,4 +5,5 @@ pub mod file_service;
 pub mod include_service;
 pub mod interface_service;
 pub mod preferences_service;
+pub mod process;
 pub mod render_service;

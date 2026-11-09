@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use crate::model::diagram::{RenderOutput, parse_protocol};
-use crate::services::file_service;
+use crate::services::{file_service, process};
 
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 /// PlantUML démarre Java au premier rendu et travaille plus lentement.
@@ -131,7 +131,7 @@ impl RenderService {
         Self {
             exe,
             command: Box::new(move || {
-                let mut cmd = Command::new(&program);
+                let mut cmd = process::command(&program);
                 cmd.arg("--serve");
                 cmd
             }),
@@ -248,7 +248,7 @@ impl RenderService {
 
 /// Repli : un processus par rendu (même délai maximal).
 fn render_once(exe: &Path, text: &str, block: usize) -> Result<RenderOutput, String> {
-    let mut cmd = Command::new(exe);
+    let mut cmd = process::command(exe);
     cmd.arg("--editor")
         .arg(format!("--block={}", block + 1))
         .stdin(Stdio::piped())
