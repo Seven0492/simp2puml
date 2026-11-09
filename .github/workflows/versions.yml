@@ -134,6 +134,9 @@ jobs:
             mkdir -p target/release
             lipo -create -output target/release/puml-editor \
               target/aarch64-apple-darwin/release/puml-editor target/x86_64-apple-darwin/release/puml-editor
+          elif [ "$RUNNER_OS" = Windows ]; then
+            # CRT statique : sans elle, l'éditeur exige VCRUNTIME140.dll, absente d'un Windows neuf.
+            RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --locked
           else
             cargo build --release --locked
           fi
@@ -150,6 +153,13 @@ jobs:
           renderer/bin/pumlrender$ext --version
           printf '@startuml\nclass A\nA --> B\n@enduml\n' | renderer/bin/pumlrender$ext | grep -q '<svg'
           if [ "$RUNNER_OS" = macOS ]; then lipo -archs editor/target/release/puml-editor; lipo -archs renderer/bin/pumlrender; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            dll=$(objdump -p editor/target/release/puml-editor.exe | sed -n 's/.*DLL Name: //p' | tr '\n' ' ')
+            echo "DLL de puml-editor.exe : $dll"
+            case "$dll" in *[Vv][Cc][Rr][Uu][Nn][Tt][Ii][Mm][Ee]*)
+              echo "::error::puml-editor.exe dépend encore du Redistributable Visual C++"; exit 1 ;;
+            esac
+          fi
           ls -l editor/target/release/puml-editor$ext renderer/bin/pumlrender$ext
 
       - name: Archive
