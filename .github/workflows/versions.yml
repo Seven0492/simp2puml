@@ -255,4 +255,5 @@ jobs:
 
       - name: Pas de copie Forgejo
         if: env.FORGEJO_TOKEN == ''
-        run: echo "::notice::Secret FORGEJO_TOKEN absent : la release n'est pas recopiée sur Forgejo."
+        run: |
+          echo "::notice::Secret FORGEJO_TOKEN absent : la release n'est pas recopiée sur Forgejo."
