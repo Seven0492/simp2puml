@@ -14,7 +14,7 @@ Chaque version publiée est compilée pour les trois systèmes. L'archive contie
 
 Extraire l'archive, puis ouvrir le lanceur comme décrit dans [Démarrer en un double-clic](#demarrer-en-un-double-clic) : il ouvre directement l'éditeur précompilé. Les binaires ne sont pas signés par un éditeur reconnu : Windows demande de confirmer, et macOS demande le clic droit → Ouvrir sur le lanceur. Le lanceur macOS lève ensuite la mise en quarantaine des deux binaires de l'éditeur, et d'eux seuls. Les [notes de version](https://github.com/Seven0492/simp2puml/releases/latest) donnent les sommes SHA-256 ; chaque release est aussi recopiée sur [Forgejo](https://git.sethmartin.dev/Seth_Martin/simp2puml/releases).
 
-Les archives sont construites automatiquement à chaque tag de version (voir [Publier une version](developpement.md#publier-une-version)). Les versions macOS et Linux n'ont pas encore été essayées sur un poste réel.
+Les archives sont construites automatiquement à chaque tag de version (voir [Publier une version](developpement.md#publier-une-version)). L'archive Linux a été essayée de bout en bout (premier lancement, Python privé, éditeur et moteur précompilés) ; les archives Windows et macOS sont construites et vérifiées par la CI, mais pas encore sur un poste réel.
 
 ## L'éditeur simp2puml
 
