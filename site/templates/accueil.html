@@ -111,9 +111,16 @@
     <figure class="fenetre"><picture><source media="(prefers-reduced-motion: reduce)" srcset="images/fixes/simp.png"><img src="images/simp.gif" alt="Import d'un projet SIMP dans un nouvel onglet." width="1200" height="750" loading="lazy"></picture></figure>
   </section>
 
-  <section class="demarrer">
-    <h2>Démarrer</h2>
-    <p>L'éditeur se construit depuis les sources, avec Nim et Rust. Aucune version précompilée n'est publiée pour l'instant.</p>
+  <section class="demarrer" id="telecharger">
+    <h2>Télécharger</h2>
+    <p>La dernière version, prête à lancer : extraire l'archive, puis ouvrir le lanceur de son système. Au premier lancement, il installe au besoin un Python privé, sans droits administrateur.</p>
+    <p class="actions telechargements">
+      <a class="bouton" data-systeme="windows" href="https://github.com/Seven0492/simp2puml/releases/latest/download/simp2puml-windows-x64.zip">Windows</a>
+      <a class="bouton" data-systeme="macos" href="https://github.com/Seven0492/simp2puml/releases/latest/download/simp2puml-macos.zip">macOS</a>
+      <a class="bouton" data-systeme="linux" href="https://github.com/Seven0492/simp2puml/releases/latest/download/simp2puml-linux-x64.tar.gz">Linux</a>
+    </p>
+    <p>Windows x64, macOS Apple Silicon et Intel, Linux x64. <a href="https://github.com/Seven0492/simp2puml/releases/latest">Notes de version et sommes SHA-256</a> · <a href="guide/installation/#telecharger">Premier lancement</a></p>
+    <p>Ou construire l'éditeur depuis les sources, avec Nim et Rust :</p>
 <pre><code>git clone https://git.sethmartin.dev/Seth_Martin/simp2puml.git
 cd simp2puml/renderer &amp;&amp; nimble build
 cd ../editor &amp;&amp; cargo build --release

@@ -16,6 +16,17 @@
     });
   }
 
+  // Téléchargement : l'archive du système du visiteur passe en premier, mise en avant.
+  var plateforme = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "").toLowerCase();
+  var systeme = /win/.test(plateforme) ? "windows" : /mac/.test(plateforme) ? "macos"
+    : /linux/.test(plateforme) && !/android/.test(navigator.userAgent.toLowerCase()) ? "linux" : "";
+  var archive = systeme && document.querySelector('.telechargements [data-systeme="' + systeme + '"]');
+  if (archive) {
+    archive.classList.add("principal");
+    archive.textContent = "Télécharger pour " + archive.textContent;
+    archive.parentNode.insertBefore(archive, archive.parentNode.firstElementChild);
+  }
+
   // Section lue, marquée dans le sommaire.
   var liens = document.querySelectorAll(".sommaire a");
   if (liens.length && "IntersectionObserver" in window) {

@@ -1,0 +1,258 @@
+# Versions précompilées de l'éditeur pour Windows, macOS et Linux.
+#
+# Un tag `v<version>` (poussé sur Forgejo, puis recopié ici par le miroir) construit les trois
+# archives, les publie dans la release GitHub du tag, puis les recopie dans la release Forgejo
+# si le secret FORGEJO_TOKEN existe. Les noms des archives ne changent jamais : le site pointe
+# vers releases/latest/download/<nom>. Lancé à la main (workflow_dispatch), il construit
+# seulement, sans rien publier : les archives restent dans les artefacts de l'exécution.
+name: Versions
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: versions-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NIM_VERSION: "2.4.0"
+  FORGEJO: https://git.sethmartin.dev
+  FORGEJO_REPO: Seth_Martin/simp2puml
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.lire.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: lire
+        name: Vérifier que le tag et les trois composants annoncent la même version
+        shell: bash
+        run: |
+          set -euo pipefail
+          paquet=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/simp2puml/__init__.py)
+          editeur=$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' editor/Cargo.toml)
+          moteur=$(sed -n 's/^version *= *"\(.*\)"$/\1/p' renderer/pumlrender.nimble)
+          echo "paquet $paquet, éditeur $editeur, moteur $moteur"
+          [ -n "$paquet" ] && [ "$paquet" = "$editeur" ] && [ "$paquet" = "$moteur" ] \
+            || { echo "::error::Versions divergentes : paquet $paquet, éditeur $editeur, moteur $moteur"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$paquet" ]; then
+            echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à la version $paquet (attendu : v$paquet)"
+            exit 1
+          fi
+          echo "version=$paquet" >> "$GITHUB_OUTPUT"
+
+  construire:
+    name: ${{ matrix.nom }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 : glibc 2.35, l'archive tourne aussi sur les distributions plus anciennes.
+          - nom: linux-x64
+            os: ubuntu-22.04
+            archive: simp2puml-linux-x64.tar.gz
+          - nom: windows-x64
+            os: windows-latest
+            archive: simp2puml-windows-x64.zip
+          # Binaires universels (Apple Silicon et Intel) construits sur un runner arm64.
+          - nom: macos
+            os: macos-latest
+            archive: simp2puml-macos.zip
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dépendances de GPUI (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev
+
+      - name: Compilateur Metal (macOS)
+        if: runner.os == 'macOS'
+        # Depuis Xcode 26, le compilateur des shaders de GPUI est un composant à part.
+        run: xcrun -sdk macosx metal --version >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ env.NIM_VERSION }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: editor
+
+      - name: Tests du moteur
+        working-directory: renderer
+        run: nim c -r --hints:off --path:src tests/test_render.nim
+
+      - name: Moteur pumlrender
+        working-directory: renderer
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows)
+              # Exécutable autonome : sans les DLL de MinGW à côté.
+              nim c --hints:off --passL:-static -o:bin/pumlrender.exe src/pumlrender.nim ;;
+            macOS)
+              nim c --hints:off --nimcache:nimcache/arm64 -o:bin/pumlrender-arm64 src/pumlrender.nim
+              nim c --hints:off --cpu:amd64 --passC:"-arch x86_64" --passL:"-arch x86_64" \
+                --nimcache:nimcache/x86_64 -o:bin/pumlrender-x86_64 src/pumlrender.nim
+              lipo -create -output bin/pumlrender bin/pumlrender-arm64 bin/pumlrender-x86_64
+              rm bin/pumlrender-arm64 bin/pumlrender-x86_64 ;;
+            *)
+              nim c --hints:off -o:bin/pumlrender src/pumlrender.nim ;;
+          esac
+
+      - name: Éditeur puml-editor
+        working-directory: editor
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            cargo build --release --locked --target aarch64-apple-darwin
+            cargo build --release --locked --target x86_64-apple-darwin
+            mkdir -p target/release
+            lipo -create -output target/release/puml-editor \
+              target/aarch64-apple-darwin/release/puml-editor target/x86_64-apple-darwin/release/puml-editor
+          else
+            cargo build --release --locked
+          fi
+
+      - name: Signature ad hoc (macOS)
+        if: runner.os == 'macOS'
+        # Apple Silicon refuse un binaire sans signature ; ad hoc ne remplace pas une notarisation.
+        run: codesign --force --sign - editor/target/release/puml-editor renderer/bin/pumlrender
+
+      - name: Essai des binaires
+        run: |
+          set -euo pipefail
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          renderer/bin/pumlrender$ext --version
+          printf '@startuml\nclass A\nA --> B\n@enduml\n' | renderer/bin/pumlrender$ext | grep -q '<svg'
+          if [ "$RUNNER_OS" = macOS ]; then lipo -archs editor/target/release/puml-editor; lipo -archs renderer/bin/pumlrender; fi
+          ls -l editor/target/release/puml-editor$ext renderer/bin/pumlrender$ext
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          dossier="simp2puml-$VERSION"
+          mkdir -p paquet
+          # Le projet tel que suivi par Git (lanceurs, convertisseur, documentation), puis les binaires
+          # là où les lanceurs et l'éditeur les cherchent déjà.
+          git archive --format=tar --prefix="$dossier/" HEAD | tar -x -C paquet
+          install -d "paquet/$dossier/editor/target/release" "paquet/$dossier/renderer/bin"
+          cp "editor/target/release/puml-editor$ext" "paquet/$dossier/editor/target/release/"
+          cp "renderer/bin/pumlrender$ext" "paquet/$dossier/renderer/bin/"
+          cd paquet
+          case "${{ matrix.archive }}" in
+            *.tar.gz) tar -czf "../${{ matrix.archive }}" "$dossier" ;;
+            *) if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip -bso0 "../${{ matrix.archive }}" "$dossier"
+               else zip -qry "../${{ matrix.archive }}" "$dossier"; fi ;;
+          esac
+          cd ..
+          ls -l "${{ matrix.archive }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.nom }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  publier:
+    name: Publier
+    needs: [version, construire]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Sommes SHA-256
+        working-directory: dist
+        run: |
+          sha256sum simp2puml-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Notes de version
+        run: |
+          cat > notes.md <<EOF
+          Éditeur simp2puml $VERSION précompilé, avec le moteur natif et le convertisseur.
+
+          | Système | Archive | Lancer |
+          | --- | --- | --- |
+          | Windows (x64) | \`simp2puml-windows-x64.zip\` | \`simp2puml-windows.cmd\` |
+          | macOS (Apple Silicon et Intel) | \`simp2puml-macos.zip\` | clic droit sur \`simp2puml-macos.command\` → Ouvrir |
+          | Linux (x64, glibc 2.35 ou plus récente) | \`simp2puml-linux-x64.tar.gz\` | \`simp2puml-linux.sh\` |
+
+          Extraire l'archive, puis ouvrir le lanceur de son système. Au premier lancement, il installe au besoin un Python privé, sans droits administrateur. Les binaires ne sont pas signés par un éditeur reconnu : Windows et macOS demandent une confirmation la première fois.
+
+          Guide : https://simp2puml.sethmartin.dev/guide/installation/
+          EOF
+
+      - name: Release GitHub
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "simp2puml $VERSION" \
+              --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+          fi
+
+      - name: Copie dans la release Forgejo
+        if: env.FORGEJO_TOKEN != ''
+        run: |
+          set -euo pipefail
+          api="$FORGEJO/api/v1/repos/$FORGEJO_REPO"
+          # Le jeton passe par la configuration de curl sur l'entrée standard, jamais par argv.
+          appel() { printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN" | curl -sS --config - "$@"; }
+          code=$(appel -o release.json -w '%{http_code}' "$api/releases/tags/$TAG")
+          if [ "$code" = 404 ]; then
+            jq -n --arg tag "$TAG" --arg name "simp2puml $VERSION" --rawfile body notes.md \
+              '{tag_name: $tag, name: $name, body: $body}' > nouvelle.json
+            code=$(appel -o release.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+              --data @nouvelle.json "$api/releases")
+          fi
+          case "$code" in 200|201) ;; *) echo "::error::Forgejo a répondu $code"; cat release.json; exit 1 ;; esac
+          id=$(jq -r .id release.json)
+          for fichier in dist/*; do
+            nom=$(basename "$fichier")
+            ancien=$(jq -r --arg n "$nom" '.assets[] | select(.name == $n) | .id' release.json)
+            [ -n "$ancien" ] && appel -f -o /dev/null -X DELETE "$api/releases/$id/assets/$ancien"
+            appel -f -o /dev/null -X POST -F "attachment=@$fichier" "$api/releases/$id/assets?name=$nom"
+            echo "copié : $nom"
+          done
+
+      - name: Pas de copie Forgejo
+        if: env.FORGEJO_TOKEN == ''
+        run: echo "::notice::Secret FORGEJO_TOKEN absent : la release n'est pas recopiée sur Forgejo."

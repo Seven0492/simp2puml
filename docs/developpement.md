@@ -54,3 +54,20 @@ Pour préparer un paquet natif local, le script prend en charge RPM et Debian :
 Pour Debian, prévoir `debhelper`, `dh-python`, `pybuild-plugin-pyproject`, `python3-all`, `python3-build`, `python3-wheel` et `python3-setuptools` ≥ 77. Les noms et disponibilités de paquets peuvent varier selon la version de la distribution ; aucune compatibilité de version non vérifiée n’est garantie.
 
 Installer un paquet construit localement : `sudo dnf install ./dist/<paquet>.rpm` ou `sudo apt install ./dist/<paquet>.deb`. Cela n’installe pas le logiciel depuis un dépôt officiel et ne signifie ni publication PyPI, ni présence dans un dépôt APT/DNF, ni signature de dépôt. Sur les autres systèmes, utiliser pipx et la wheel ; aucune recette native supplémentaire n’est fournie.
+
+## Publier une version
+
+Les versions précompilées sont construites par GitHub Actions (`.github/workflows/versions.yml`) sur le miroir [github.com/Seven0492/simp2puml](https://github.com/Seven0492/simp2puml), seul à offrir des machines macOS. Forgejo reste le dépôt de référence : son miroir poussé recopie branches et tags vers GitHub à chaque push.
+
+1. Aligner la version dans `src/simp2puml/__init__.py`, `editor/Cargo.toml` et `renderer/pumlrender.nimble`. La construction s'arrête si elles divergent, ou si le tag ne vaut pas `v` suivi de cette version.
+2. Committer, puis créer et pousser le tag sur Forgejo : `git tag v0.1.0 && git push origin v0.1.0`.
+3. Le workflow construit `simp2puml-windows-x64.zip`, `simp2puml-macos.zip` (binaires universels, signés ad hoc) et `simp2puml-linux-x64.tar.gz` (Ubuntu 22.04), avec `SHA256SUMS.txt`. Il les publie dans la release GitHub du tag, puis les recopie dans la release Forgejo.
+
+Les noms d'archives ne changent pas d'une version à l'autre : le site et le README pointent vers `releases/latest/download/<archive>` de GitHub, sans redéploiement du site. Lancé à la main (onglet Actions, « Versions », *Run workflow*), le workflow construit seulement ; les archives restent dans les artefacts de l'exécution.
+
+Secrets et réglages, hors du dépôt :
+
+| Où | Quoi | Rôle |
+| --- | --- | --- |
+| Forgejo, Paramètres du dépôt → Miroirs | miroir poussé vers `https://github.com/Seven0492/simp2puml.git`, synchronisé à chaque commit, avec un jeton GitHub à grain fin (Contents et Workflows en écriture sur ce seul dépôt) | déclencher la construction à chaque tag |
+| GitHub, Settings → Secrets → Actions | `FORGEJO_TOKEN`, jeton Forgejo de portée repository en écriture | recopier la release sur Forgejo ; sans lui, cette étape est sautée avec un avertissement |

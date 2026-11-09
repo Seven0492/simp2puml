@@ -45,7 +45,9 @@ Rendus par le moteur natif à partir de [`renderer/tests/samples/`](renderer/tes
 
 ## Démarrer
 
-L'éditeur se construit depuis les sources, avec Nim ≥ 1.6 et Rust stable. Aucune version précompilée n'est publiée pour l'instant.
+Versions précompilées de la dernière release : [Windows](https://github.com/Seven0492/simp2puml/releases/latest/download/simp2puml-windows-x64.zip), [macOS](https://github.com/Seven0492/simp2puml/releases/latest/download/simp2puml-macos.zip), [Linux](https://github.com/Seven0492/simp2puml/releases/latest/download/simp2puml-linux-x64.tar.gz). Extraire l'archive, puis ouvrir le lanceur de son système : voir [Installation](docs/installation.md#telecharger).
+
+L'éditeur se construit aussi depuis les sources, avec Nim ≥ 1.6 et Rust stable :
 
 ```sh
 git clone https://git.sethmartin.dev/Seth_Martin/simp2puml.git
