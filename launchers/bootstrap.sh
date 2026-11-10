@@ -170,15 +170,6 @@ EOF
     fi
 }
 
-# Version précompilée : macOS marque chaque fichier extrait d'une archive téléchargée et refuserait
-# les binaires de l'éditeur, signés ad hoc seulement. Ouvrir ce lanceur (clic droit → Ouvrir) vaut
-# accord ; seuls ces deux binaires sont libérés.
-if [ "$SYSTEM" = macos ]; then
-    for binary in "$ROOT/editor/target/release/puml-editor" "$ROOT/renderer/bin/pumlrender"; do
-        [ -f "$binary" ] && xattr -d com.apple.quarantine "$binary" 2>/dev/null || true
-    done
-fi
-
 PYTHON=""
 mkdir -p "$DATA"
 # Python mémorisé : pas de recherche (plusieurs lancements de Python) tant qu'il existe encore.

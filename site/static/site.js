@@ -18,7 +18,7 @@
 
   // Téléchargement : l'archive du système du visiteur passe en premier, mise en avant.
   var plateforme = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "").toLowerCase();
-  var systeme = /win/.test(plateforme) ? "windows" : /mac/.test(plateforme) ? "macos"
+  var systeme = /win/.test(plateforme) ? "windows"
     : /linux/.test(plateforme) && !/android/.test(navigator.userAgent.toLowerCase()) ? "linux" : "";
   var archive = systeme && document.querySelector('.telechargements [data-systeme="' + systeme + '"]');
   if (archive) {

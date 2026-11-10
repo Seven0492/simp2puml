@@ -1,6 +1,6 @@
-# Versions précompilées de l'éditeur pour Windows, macOS et Linux.
+# Versions précompilées de l'éditeur pour Windows et Linux.
 #
-# Un tag `v<version>` (poussé sur Forgejo, puis recopié ici par le miroir) construit les trois
+# Un tag `v<version>` (poussé sur Forgejo, puis recopié ici par le miroir) construit les deux
 # archives, les publie dans la release GitHub du tag, puis les recopie dans la release Forgejo
 # si le secret FORGEJO_TOKEN existe. Les noms des archives ne changent jamais : le site pointe
 # vers releases/latest/download/<nom>. Lancé à la main (workflow_dispatch), il construit
@@ -63,10 +63,6 @@ jobs:
           - nom: windows-x64
             os: windows-latest
             archive: simp2puml-windows-x64.zip
-          # Binaires universels (Apple Silicon et Intel) construits sur un runner arm64.
-          - nom: macos
-            os: macos-latest
-            archive: simp2puml-macos.zip
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -84,19 +80,12 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev
 
-      - name: Compilateur Metal (macOS)
-        if: runner.os == 'macOS'
-        # Depuis Xcode 26, le compilateur des shaders de GPUI est un composant à part.
-        run: xcrun -sdk macosx metal --version >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
-
       - uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: ${{ env.NIM_VERSION }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -114,12 +103,6 @@ jobs:
             Windows)
               # Exécutable autonome : sans les DLL de MinGW à côté.
               nim c --hints:off --passL:-static -o:bin/pumlrender.exe src/pumlrender.nim ;;
-            macOS)
-              nim c --hints:off --nimcache:nimcache/arm64 -o:bin/pumlrender-arm64 src/pumlrender.nim
-              nim c --hints:off --cpu:amd64 --passC:"-arch x86_64" --passL:"-arch x86_64" \
-                --nimcache:nimcache/x86_64 -o:bin/pumlrender-x86_64 src/pumlrender.nim
-              lipo -create -output bin/pumlrender bin/pumlrender-arm64 bin/pumlrender-x86_64
-              rm bin/pumlrender-arm64 bin/pumlrender-x86_64 ;;
             *)
               nim c --hints:off -o:bin/pumlrender src/pumlrender.nim ;;
           esac
@@ -128,23 +111,12 @@ jobs:
         working-directory: editor
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = macOS ]; then
-            cargo build --release --locked --target aarch64-apple-darwin
-            cargo build --release --locked --target x86_64-apple-darwin
-            mkdir -p target/release
-            lipo -create -output target/release/puml-editor \
-              target/aarch64-apple-darwin/release/puml-editor target/x86_64-apple-darwin/release/puml-editor
-          elif [ "$RUNNER_OS" = Windows ]; then
+          if [ "$RUNNER_OS" = Windows ]; then
             # CRT statique : sans elle, l'éditeur exige VCRUNTIME140.dll, absente d'un Windows neuf.
             RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --locked
           else
             cargo build --release --locked
           fi
-
-      - name: Signature ad hoc (macOS)
-        if: runner.os == 'macOS'
-        # Apple Silicon refuse un binaire sans signature ; ad hoc ne remplace pas une notarisation.
-        run: codesign --force --sign - editor/target/release/puml-editor renderer/bin/pumlrender
 
       - name: Essai des binaires
         run: |
@@ -152,7 +124,6 @@ jobs:
           ext=""; [ "$RUNNER_OS" = Windows ] && ext=.exe
           renderer/bin/pumlrender$ext --version
           printf '@startuml\nclass A\nA --> B\n@enduml\n' | renderer/bin/pumlrender$ext | grep -q '<svg'
-          if [ "$RUNNER_OS" = macOS ]; then lipo -archs editor/target/release/puml-editor; lipo -archs renderer/bin/pumlrender; fi
           if [ "$RUNNER_OS" = Windows ]; then
             dll=$(objdump -p editor/target/release/puml-editor.exe | sed -n 's/.*DLL Name: //p' | tr '\n' ' ')
             echo "DLL de puml-editor.exe : $dll"
@@ -177,8 +148,7 @@ jobs:
           cd paquet
           case "${{ matrix.archive }}" in
             *.tar.gz) tar -czf "../${{ matrix.archive }}" "$dossier" ;;
-            *) if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip -bso0 "../${{ matrix.archive }}" "$dossier"
-               else zip -qry "../${{ matrix.archive }}" "$dossier"; fi ;;
+            *.zip) 7z a -tzip -bso0 "../${{ matrix.archive }}" "$dossier" ;;
           esac
           cd ..
           ls -l "${{ matrix.archive }}"
@@ -221,10 +191,9 @@ jobs:
           | Système | Archive | Lancer |
           | --- | --- | --- |
           | Windows (x64) | \`simp2puml-windows-x64.zip\` | \`simp2puml-windows.cmd\` |
-          | macOS (Apple Silicon et Intel) | \`simp2puml-macos.zip\` | clic droit sur \`simp2puml-macos.command\` → Ouvrir |
           | Linux (x64, glibc 2.35 ou plus récente) | \`simp2puml-linux-x64.tar.gz\` | \`simp2puml-linux.sh\` |
 
-          Extraire l'archive, puis ouvrir le lanceur de son système. Au premier lancement, il installe au besoin un Python privé, sans droits administrateur. Les binaires ne sont pas signés par un éditeur reconnu : Windows et macOS demandent une confirmation la première fois.
+          Extraire l'archive, puis ouvrir le lanceur de son système. Au premier lancement, il installe au besoin un Python privé, sans droits administrateur. Les binaires ne sont pas signés par un éditeur reconnu : Windows demande une confirmation la première fois.
 
           Guide : https://simp2puml.sethmartin.dev/guide/installation/
           EOF
